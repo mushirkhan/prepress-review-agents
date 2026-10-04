@@ -98,11 +98,14 @@ File paths are built from a validated job id by the store, never by a model. Eve
 
 ## Running the application
 
+**Live:** [prepress.gemsofy.com](https://prepress.gemsofy.com) (sign-in with a Cognito account in the `prepress-reviewers` group). Pick a sample under **Try a sample**, start the review and watch the agents work.
+
 ### Locally
 
 ```bash
 npm ci
 AUTH_MODE=dev npm run dev -w @prepress/api     # API on http://localhost:3000, no sign-in (refused in production)
+npm run dev -w @prepress/web                   # web app on http://localhost:5173, talking to the local API
 ```
 
 Put the `prepress-app` IAM user's keys in a `.env` file at the repository root (see `.env.example`; it is git-ignored). Without AWS credentials the API still runs, and every review fails closed as `NEEDS_HUMAN_REVIEW`. Locally, the external MCP filesystem server is started over stdio automatically.
@@ -122,6 +125,10 @@ All endpoints except `/healthz` need a Cognito access token issued to the `prepr
 | `GET /samples`, `GET /samples/:id/file` | The sample set, for trying the app |
 
 Each user can start 10 reviews per 10 minutes, and at most 2 reviews run at once. Another user's job always returns `404`.
+
+### Web app
+
+A Vite + React single-page app served by nginx. **New review** uploads artwork with its job ticket or loads a sample; the **job page** shows the verdict, the agent timeline live as it happens (every delegation, tool call with its result, MCP call, refused delegation and blocked tool call), the findings grouped by agent and the report; **History** lists your reviews. Sign-in is Cognito's hosted page (authorization code with PKCE). The live timeline reads the API's Server-Sent Events with `fetch`, because `EventSource` cannot send the access token.
 
 ## Running the tests and evaluations
 
