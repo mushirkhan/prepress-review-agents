@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/coverage
+.git
+.githooks
+data
+evals/results
+.env
+.env.*
+!.env.example
+*.md
+infra

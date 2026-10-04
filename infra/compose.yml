@@ -1,0 +1,50 @@
+# Production stack on the app VM (/opt/prepress/compose.yml).
+# Shipped by CI over SSH and applied by deploy.sh; do not edit on the VM.
+#
+# No service publishes a port. Public traffic arrives only through the
+# Cloudflare Tunnel, which reaches containers by name on the internal network.
+name: prepress
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  cloudflared:
+    <<: *hardening
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:?TUNNEL_TOKEN must be set in .env}
+
+  api:
+    <<: *hardening
+    image: registry.gitlab.com/genai-rag/prepress-review-agents/api:${IMAGE_TAG:?IMAGE_TAG is required}
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - /srv/prepress/data:/data
+    # Pass only what the API needs. The tunnel token stays out of this container.
+    environment:
+      - APP_VERSION=${IMAGE_TAG}
+      - PORT=3000
+      - DATA_DIR=/data
+      - MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES:-204800}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - BEDROCK_ORCHESTRATOR_MODEL=${BEDROCK_ORCHESTRATOR_MODEL:-amazon.nova-lite-v1:0}
+      - BEDROCK_SPECIALIST_MODEL=${BEDROCK_SPECIALIST_MODEL:-amazon.nova-micro-v1:0}
+      - BEDROCK_VISION_MODEL=${BEDROCK_VISION_MODEL:-amazon.nova-lite-v1:0}
+      - BEDROCK_EMBEDDING_MODEL=${BEDROCK_EMBEDDING_MODEL:-amazon.titan-embed-text-v2:0}
+      - COGNITO_REGION=${COGNITO_REGION:-}
+      - COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID:-}
+      - COGNITO_CLIENT_ID=${COGNITO_CLIENT_ID:-}
+      - COGNITO_REQUIRED_GROUP=${COGNITO_REQUIRED_GROUP:-prepress-reviewers}
+
+  # Placeholder until the web app lands; keeps prepress.gemsofy.com routed.
+  web:
+    <<: *hardening
+    image: traefik/whoami
