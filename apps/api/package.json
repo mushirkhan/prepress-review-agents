@@ -10,7 +10,8 @@
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "samples": "tsx scripts/generate-samples.ts"
+    "samples": "tsx scripts/generate-samples.ts",
+    "review": "node --env-file-if-exists=../../.env --import tsx scripts/review-sample.ts"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^5.0.105",
