@@ -1,0 +1,71 @@
+# GitLab CI/CD (private GitLab remote only; GitHub uses .github/workflows).
+# Runs on the self-hosted GenAI-RAG group runner on the Proxmox server.
+#
+#   check   every push        lint, typecheck, offline tests (no AWS calls)
+#   build   main only         build the API image, push to the GitLab registry
+#   deploy  main only         ship compose.yml + image tag to the app VM
+
+stages: [check, build, deploy]
+
+default:
+  tags: [proxmox-ci-runner]
+  interruptible: true
+
+variables:
+  API_IMAGE: $CI_REGISTRY_IMAGE/api
+  npm_config_cache: $CI_PROJECT_DIR/.npm
+
+.main_only: &main_only
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+check:
+  stage: check
+  image: node:22-slim
+  cache:
+    key:
+      files: [package-lock.json]
+    paths: [.npm/]
+  script:
+    - npm ci --prefer-offline --no-audit --no-fund
+    - npm run lint
+    - npm run typecheck
+    - npm test
+
+build_api:
+  stage: build
+  <<: *main_only
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: /certs
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build -f apps/api/Dockerfile -t "$API_IMAGE:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$API_IMAGE:$CI_COMMIT_SHORT_SHA"
+
+deploy:
+  stage: deploy
+  <<: *main_only
+  image: alpine:3.20
+  # Never run two deploys at once, and never cancel one half-way.
+  resource_group: production
+  interruptible: false
+  environment:
+    name: production
+    url: https://prepress.gemsofy.com
+  before_script:
+    - apk add --no-cache openssh-client
+    - install -m 600 "$SSH_PRIVATE_KEY" /tmp/deploy_key
+  script:
+    # The key is restricted on the VM to running /opt/prepress/deploy.sh.
+    # The compose file travels on stdin; the tag is validated by deploy.sh.
+    - >
+      ssh -i /tmp/deploy_key
+      -o UserKnownHostsFile="$SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes
+      -o ConnectTimeout=15
+      "$DEPLOY_USER@$DEPLOY_HOST" "deploy $CI_COMMIT_SHORT_SHA" < infra/compose.yml
+  after_script:
+    - rm -f /tmp/deploy_key

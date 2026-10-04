@@ -55,6 +55,23 @@ _TODO_
 
 _TODO_
 
+## Deployment (CI/CD)
+
+```
+push to main ──► GitLab: check ──► build_api ──► deploy ──► app VM (deploy.sh)
+                 lint, typecheck,   image tagged   SSH with a      pull, start,
+                 offline tests      with git SHA   restricted key  health check,
+                                                                   roll back on failure
+```
+
+- The pipeline runs on a self-hosted GitLab group runner (Docker executor) on the author's Proxmox server.
+- `build_api` pushes `registry.gitlab.com/genai-rag/prepress-review-agents/api:<short-sha>`.
+- `deploy` connects with an SSH key that the VM restricts to running `/opt/prepress/deploy.sh`, so the key cannot open a shell. The compose file is sent on stdin and the image tag must be a git SHA.
+- `deploy.sh` keeps the previous release and rolls back automatically if `/healthz` does not respond within 60 seconds.
+- No ports are published on the VM. Public traffic reaches it only through Cloudflare Tunnel.
+
+One-time VM setup (already done for the live environment): copy `infra/deploy.sh` to `/opt/prepress/deploy.sh` and create `/opt/prepress/.env` from `.env.example`.
+
 ## Assumptions and limitations
 
 - Artwork input is a single JPEG, PNG or TIFF of 200 KB or less. At 300 DPI this covers small formats such as business cards, A6 flyers and labels.
