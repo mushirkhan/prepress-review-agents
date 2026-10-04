@@ -11,7 +11,7 @@ export interface ManifestSample {
   file: string;
   ticket: Record<string, unknown>;
   printedText: string[];
-  expected: { verdict?: string; issueCodes?: string[] };
+  expected: { verdict?: string; issueCodes?: string[]; httpStatus?: number; error?: string };
 }
 
 export async function loadManifest(): Promise<ManifestSample[]> {
