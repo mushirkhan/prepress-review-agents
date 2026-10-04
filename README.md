@@ -7,8 +7,6 @@ A multi-agent system that reviews print artwork before it goes to press. A revie
 - An **IP & Trademark agent** flags protected brand names, slogans and logos (for example Nike or Adidas) as not OK to produce.
 - A **Report agent** writes the result to disk through an external MCP server.
 
-> Status: work in progress. This README grows with each commit; sections marked _TODO_ are filled in as the matching code lands.
-
 ## Repositories
 
 This project is developed in one local repository and pushed to two remotes with identical history:
@@ -33,7 +31,52 @@ GitHub Actions repeats the scan on every push as a backstop.
 
 ## Architecture
 
-_TODO_
+```mermaid
+flowchart LR
+  user([Reviewer's browser]) -->|HTTPS| cf[Cloudflare Tunnel]
+  user -.->|sign-in, PKCE| cognito[(Amazon Cognito)]
+  subgraph apic [api container: Node.js, Hono, Mastra]
+    direction TB
+    jobs[JobService<br/>upload checks, rate limit,<br/>2 concurrent reviews] --> orch
+    orch[Orchestrator<br/>Nova Lite] -->|delegate_preflight| pre[Preflight<br/>Nova Micro]
+    orch -->|delegate_ip| ip[IP & Trademark<br/>Nova Micro]
+    orch -->|delegate_report| rep[Report<br/>Nova Micro]
+    pre --> ptools[print checks<br/>sharp, EAN-13]
+    ip --> itools[mark registry, injection check,<br/>vision tool, embeddings]
+    policy[Verdict policy<br/>code, not a model]
+    trace[(Trace + SQLite)]
+  end
+
+  cf --> web[web<br/>nginx + React SPA]
+  cf --> apic
+  apic -->|Bedrock| bedrock[(Nova Lite / Micro,<br/>Titan embeddings)]
+  ptools & itools -->|read_media_file| mcpa[mcp-artwork<br/>filesystem MCP server<br/>artwork folder, read-only]
+  rep -->|write_file| mcpr[mcp-reports<br/>filesystem MCP server<br/>reports folder]
+  apic -. JWT check .-> cognito
+```
+
+Five containers run on one VM: `cloudflared`, `web`, `api` and two instances of the external MCP filesystem server. Only `cloudflared` has a route in from the internet; the MCP servers sit on an internal network with no internet access.
+
+**One review, end to end**
+
+1. The browser uploads the artwork and a job ticket. The API checks the file by content (type, size, decodability) **before any model runs**, stores it, and returns a job id (`202`).
+2. The review runs in the background. The orchestrator gets the ticket and delegates. Each delegation tool rebuilds the specialist's brief from the ticket and applies the delegation guardrails.
+3. Preflight and IP & Trademark call their tools. The tools read the artwork through the `mcp-artwork` MCP server (one shared read per job), measure or match deterministically, and record structured issues.
+4. Code turns the issues into the verdict. The Report agent explains it and saves the report through the `mcp-reports` MCP server; if it fails, a template report is written instead.
+5. Every step is written to the job's trace. The browser follows it live over Server-Sent Events, which is what the timeline on the job page shows.
+
+**Key decisions**
+
+| Decision | Why | Trade-off |
+|---|---|---|
+| The verdict is decided by code from structured issues, not by a model | A model cannot be talked out of a finding, and the result is testable and repeatable | The policy is simple (worst severity wins); nuance goes to a human via `NEEDS_HUMAN_REVIEW` |
+| Measurements and matching are deterministic tools; models choose, read and explain | Cheap models are good at reading text and explaining; they are poor at arithmetic on pixels | More tool code to write and maintain |
+| Orchestrator plus three specialists with disjoint tools | Each agent has a small prompt and a small toolset, which keeps cheap models on task and makes scope enforceable | More model calls per review than one agent with every tool |
+| Own delegation tools (`{ task }`) instead of Mastra's built-in sub-agent tools | Nova Lite produced malformed tool calls with the built-in schema; one string field is reliable | Slightly more code |
+| Nova Lite for the orchestrator and vision, Nova Micro for specialists, greedy decoding | Lowest-cost Bedrock models that handled the task; temperature 0 and top-k 1 make runs repeatable | Less capable than larger models on messy real artwork |
+| Files only through an external MCP server, two instances with one folder each | Shows a real external MCP integration, and gives three independent limits (client allowlist, server root, read-only mount) | An extra hop and two more containers |
+| Fail closed | A broken run must never look like an approval | Outages send work to humans |
+| Mastra on Node.js, SQLite, one VM | Fits the 3–4 hour scope and the home server; everything self-hosted except Bedrock and Cognito | Single instance; see [Taking this to production](#taking-this-to-production) |
 
 ## How responsibilities are divided between agents
 
@@ -162,25 +205,61 @@ npm run eval -w @prepress/api -- --repeat 3 --publish   # writes apps/api/evals/
 ## Deployment (CI/CD)
 
 ```
-push to main ──► GitLab: check ──► build_api ──► deploy ──► app VM (deploy.sh)
-                 lint, typecheck,   image tagged   SSH with a      pull, start,
-                 offline tests      with git SHA   restricted key  health check,
-                                                                   roll back on failure
+push to main ──► GitLab: check ──► build_images ──► deploy ──► app VM (deploy.sh)
+                 lint, typecheck,  api, web, MCP    SSH with a      pull, start,
+                 offline tests     images tagged    restricted key  health check,
+                                   with git SHA                     roll back on failure
 ```
 
 - The pipeline runs on a self-hosted GitLab group runner (Docker executor) on the author's Proxmox server.
-- `build_api` pushes `registry.gitlab.com/genai-rag/prepress-review-agents/api:<short-sha>`.
+- `build_images` pushes the `api`, `web` and `mcp-filesystem` images to `registry.gitlab.com/genai-rag/prepress-review-agents/<image>:<short-sha>`.
 - `deploy` connects with an SSH key that the VM restricts to running `/opt/prepress/deploy.sh`, so the key cannot open a shell. The compose file is sent on stdin and the image tag must be a git SHA.
-- `deploy.sh` keeps the previous release and rolls back automatically if `/healthz` does not respond within 60 seconds.
+- `deploy.sh` keeps the previous release and rolls back automatically if the API's `/healthz` and the web app do not both respond within 60 seconds.
 - No ports are published on the VM. Public traffic reaches it only through Cloudflare Tunnel.
 
 One-time VM setup (already done for the live environment): copy `infra/deploy.sh` to `/opt/prepress/deploy.sh` and create `/opt/prepress/.env` from `.env.example`.
 
 ## Assumptions and limitations
 
-- Artwork input is a single JPEG, PNG or TIFF of 200 KB or less. At 300 DPI this covers small formats such as business cards, A6 flyers and labels.
-- SSH to the app VM uses password login and is reachable from the home LAN only.
+**Assumptions**
+
+- Artwork input is a single JPEG, PNG or TIFF of 200 KB or less, as agreed for this exercise. At 300 DPI this covers small formats such as business cards, A6 flyers and labels.
+- The job ticket is trusted input from the customer's order (trim size, bleed, colour mode, minimum DPI, barcode, licence reference). The artwork is untrusted.
+- A brand on the artwork without a matching licence on the ticket is not OK to produce. Ambiguous everyday words that are also brands ("apple") go to a human rather than being rejected.
+- Missing a problem is worse than asking a human, so the system leans towards `NEEDS_HUMAN_REVIEW` when unsure or when anything fails.
+
+**Limitations**
+
+- **Synthetic samples.** The 13 samples use clean fonts and flat colours. Real artwork (photos, small or rotated text, real logos) is harder for the vision step, and the evaluation does not yet measure that.
+- **Small trademark registry.** A handful of brands, slogans and logo descriptions, enough to show the behaviour. It is not legal clearance.
+- **Raster checks only.** No PDF, vector, font, ink coverage or spot colour checks; bleed is inferred from pixel dimensions.
+- **Model variance.** Greedy decoding makes runs repeatable but not guaranteed identical across Bedrock model updates; the evaluation's `--repeat` reports any instability.
+- **Single instance.** Reviews run inside the API process on one VM, with SQLite and local folders. A restart during a review fails that review (it is marked failed, never approved). At most 2 reviews run at once.
+- **Home-server operations.** No high availability, backups are manual, and SSH to the VM uses password login from the home LAN only.
+- **Live evaluation results.** The evaluation harness, gates and offline tests are complete; a published live run (`RESULTS.md`) is added when it is run against Bedrock.
 
 ## Taking this to production
 
-_TODO_
+The live deployment is a working demo on one home server. For real customers I would change the following, roughly in this order.
+
+**Reliability and scale**
+
+- **Queue and workers.** Today reviews run inside the API process, so a restart loses in-flight reviews. Put jobs on a queue (SQS) and run agents in separate worker processes or containers that scale with queue depth, with retries and a dead-letter queue. The API then only accepts uploads and serves results.
+- **Managed storage.** Move artwork and reports to S3 (encrypted, lifecycle rules for retention) and jobs plus traces to Postgres (RDS). The MCP boundary stays: either the filesystem MCP server over a mounted volume, or an S3-backed MCP server with the same read-only/write-only split, enforced again by IAM policies per role.
+- **Hosting.** Run the containers on ECS Fargate or EKS across two availability zones behind an ALB, with WAF in front; replace the home VM, the tunnel and SSH deploys with image deploys through the cloud provider (blue/green or canary, automatic rollback on health checks).
+- **Bedrock limits.** Request quota increases, use cross-region inference profiles, add a circuit breaker and a per-customer budget, and keep the fail-closed behaviour when the model is unavailable.
+
+**Quality of the reviews**
+
+- **Real artwork.** Accept PDF/X and larger files (presigned S3 uploads), extract text, fonts, images and colour data from the PDF itself, and add checks that matter on press: total ink coverage, spot colours, overprint, font embedding, minimum line weights and text size.
+- **Trademarks.** Replace the fixed registry with a maintained trademark source and a logo detection model, with licence records per customer so a licensed brand is approved for that customer only.
+- **Evaluation as a release gate.** Grow the golden set from real, anonymised jobs, including every reviewer override; run the evaluation on every prompt, model or code change before deploy, and track accuracy and unsafe approvals over time. Add a production feedback loop: reviewers confirm or overturn verdicts, and disagreements become new test cases.
+- **Human in the loop.** A review queue for `NEEDS_HUMAN_REVIEW` with assignment, comments and an audit of who approved what.
+
+**Security and operations**
+
+- **Secrets and identity.** IAM roles instead of access keys, secrets in Secrets Manager, least-privilege policies per service, and Cognito with MFA and per-customer tenancy (jobs partitioned by organisation, not only by user).
+- **Uploads.** Malware scanning, strict decoding limits (pixel count, decompression bombs) and storage of the original file separately from anything the models see.
+- **Prompt injection.** Keep the current layers (text on the artwork is data, tools have no write access, the verdict is code) and add red-team cases to the evaluation set.
+- **Observability.** Export the trace as OpenTelemetry spans (one span per agent, tool and MCP call) to a tracing backend; dashboards and alerts for latency, error rate, token cost per review, guardrail blocks and verdict mix; structured logs with job ids, without customer content.
+- **Compliance.** Data retention and deletion per customer, region pinning for artwork, and a documented model and data-processing inventory.
