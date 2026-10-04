@@ -51,10 +51,12 @@ log "starting services"
 compose compose.yml image-tag.env up -d --remove-orphans
 
 # ---- 4. Health check, rollback on failure ----
+# Both public services must answer: the API's /healthz and the web app's index page.
 healthy() {
   compose compose.yml image-tag.env exec -T api node -e \
     "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" \
-    >/dev/null 2>&1
+    >/dev/null 2>&1 &&
+    compose compose.yml image-tag.env exec -T web wget -qO- http://127.0.0.1/ >/dev/null 2>&1
 }
 
 for ((i = 0; i < HEALTH_TIMEOUT_S; i += 3)); do
@@ -67,7 +69,7 @@ for ((i = 0; i < HEALTH_TIMEOUT_S; i += 3)); do
 done
 
 log "health check failed after ${HEALTH_TIMEOUT_S}s"
-compose compose.yml image-tag.env logs --tail 30 api || true
+compose compose.yml image-tag.env logs --tail 30 api web || true
 if [[ -f compose.prev.yml && -f image-tag.prev.env ]]; then
   log "rolling back to $(cut -d= -f2 image-tag.prev.env)"
   mv compose.prev.yml compose.yml
