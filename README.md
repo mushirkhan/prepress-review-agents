@@ -41,7 +41,25 @@ _TODO_
 
 ## Tools and the external MCP server
 
-_TODO_
+Agents act only through tools. The domain tools are plain, deterministic TypeScript functions: the model decides **when** to call them and explains the results, but never measures pixels or matches trademarks itself. That keeps the checks testable and repeatable.
+
+| Tool | Used by | What it does |
+|---|---|---|
+| `readImageMetadata` | Preflight | Pixel size, declared DPI and colour space via `sharp`. Fully decodes the file, so empty, non-image and truncated files fail with a clear reason |
+| `checkImageDpi` | Preflight | `LOW_RESOLUTION` below the ticket's minimum DPI |
+| `checkBleed` | Preflight | File must measure trim + bleed (either orientation, 0.5 mm tolerance); exactly trim size is `BLEED_MISSING` |
+| `checkColorSpace` | Preflight | RGB artwork on a CMYK job is `WRONG_COLOR_SPACE` |
+| `validateEan13` | Preflight | Recomputes the barcode check digit |
+| `matchProtectedMarks` | IP & Trademark | Brand names and slogans from a fixed registry; catches look-alikes (`N1KE`) and misspellings (`ADIDAZ`); everyday words such as "apple" are flagged as ambiguous, not rejected |
+| `detectInjection` | IP & Trademark | Flags text on the artwork that tries to instruct the review system |
+
+Every tool returns structured `Issue`s with a fixed code and a severity (`CRITICAL`, `WARNING`, `INFO`), so the verdict policy and the evaluation work on codes rather than free text.
+
+_The agent wiring and the external MCP server are added in the next milestones._
+
+## Sample artwork
+
+[`samples/`](samples/README.md) holds 13 generated artwork files and 4 invalid uploads, each with a job ticket and an expected result in `samples/manifest.json`. They are generated from known inputs, so the expected results are ground truth by construction. Use them to try the app, and they double as the evaluation's golden set.
 
 ## Running the application
 
