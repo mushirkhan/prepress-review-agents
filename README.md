@@ -150,7 +150,7 @@ The evaluation asks **"does the system behave correctly?"**, not "is the model c
 npm run eval -w @prepress/api -- --repeat 3 --publish   # writes apps/api/evals/RESULTS.md
 ```
 
-Latest results: [`apps/api/evals/RESULTS.md`](apps/api/evals/RESULTS.md).
+`--publish` writes the summary to `apps/api/evals/RESULTS.md`, which is committed with each published run.
 
 ## Deployment (CI/CD)
 
