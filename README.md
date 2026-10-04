@@ -74,7 +74,23 @@ Agents act only through tools. The domain tools are plain, deterministic TypeScr
 
 Every tool returns structured `Issue`s with a fixed code and a severity (`CRITICAL`, `WARNING`, `INFO`), so the verdict policy and the evaluation work on codes rather than free text.
 
-_The external MCP server that reads artwork and writes reports is added in the next milestone._
+### The external MCP server
+
+Agents never touch the filesystem directly. They reach files only through **[`@modelcontextprotocol/server-filesystem`](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem)**, an MCP server maintained by the MCP project, using the official MCP TypeScript SDK client.
+
+| Connection | Server sees | Mounted | Tools the server offers | Tools this client may call | Used by |
+|---|---|---|---|---|---|
+| `mcp-artwork` | artwork folder only | read-only | 14 (`read_media_file`, `write_file`, `move_file`, …) | `read_media_file` | Preflight and IP & Trademark tools |
+| `mcp-reports` | reports folder only | read-write | 14 | `write_file` | Report agent's `save_report` |
+
+Three independent layers keep the agents inside their scope:
+
+1. **Client allowlist.** Each connection refuses any MCP tool outside its list before a request leaves the API.
+2. **Server boundary.** Each server instance is started with one folder; anything outside it is refused by the server (`Access denied - path outside allowed directories`).
+3. **Operating system.** The artwork folder is mounted read-only into its MCP container, so artwork cannot be modified even if both layers above failed.
+
+File paths are built from a validated job id by the store, never by a model. Every MCP call appears in the trace under the agent whose tool made it. In production each server runs in its own container behind a small stdio-to-HTTP bridge on an internal network with no internet access; in local development and tests it is started over stdio.
+
 
 ## Sample artwork
 
