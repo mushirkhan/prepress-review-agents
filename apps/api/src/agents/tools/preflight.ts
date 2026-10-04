@@ -1,16 +1,20 @@
 import { validateEan13 } from '../../tools/preflight/ean13.js';
 import { readImageMetadata, type ImageMetadata } from '../../tools/preflight/imageMetadata.js';
 import { checkBleed, checkColorSpace, checkImageDpi, physicalSizeMm } from '../../tools/preflight/printChecks.js';
-import type { JobContext } from '../context.js';
+import { type JobContext, observeCalls, once } from '../context.js';
 import { jobTool, noInput } from '../toolkit.js';
 
 /** Loads the artwork through the store once per run and caches its metadata. */
 export async function ensureMetadata(job: JobContext): Promise<ImageMetadata> {
-  if (!job.state.metadata) {
-    job.state.artwork ??= await job.deps.store.readArtwork(job.jobId);
-    job.state.metadata = await readImageMetadata(job.state.artwork);
-  }
+  job.state.metadata ??= await once(job, 'metadata', async () =>
+    readImageMetadata(await loadArtwork(job, 'preflight-agent')),
+  );
   return job.state.metadata;
+}
+
+/** Reads the job's artwork through the store once per run, whichever agent asks first. */
+export function loadArtwork(job: JobContext, agent: 'preflight-agent' | 'ip-agent'): Promise<Buffer> {
+  return once(job, 'artwork', () => job.deps.store.readArtwork(job.jobId, observeCalls(job, agent)));
 }
 
 const owner = 'preflight-agent' as const;

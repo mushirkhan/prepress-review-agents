@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { JobContext } from '../context.js';
+import { type JobContext, observeCalls } from '../context.js';
 import type { Decision } from '../policy.js';
 import { jobTool } from '../toolkit.js';
 
@@ -19,7 +19,7 @@ export const saveReportTool = jobTool({
   run: async ({ markdown }, job) => {
     // The verdict line is written by the system, not the model.
     const header = job.state.decision ? reportHeader(job, job.state.decision) : '';
-    const path = await job.deps.store.saveReport(job.jobId, header + markdown);
+    const path = await job.deps.store.saveReport(job.jobId, header + markdown, observeCalls(job, 'report-agent'));
     job.state.reportPath = path;
     return { result: { saved: true, path } };
   },

@@ -15,6 +15,7 @@ export type TraceEventType =
   | 'tool.called'
   | 'tool.result'
   | 'tool.error'
+  | 'mcp.call'
   | 'guardrail.blocked'
   | 'agent.step'
   | 'verdict';

@@ -10,6 +10,15 @@ const EnvSchema = z.object({
   BEDROCK_SPECIALIST_MODEL: z.string().default('amazon.nova-micro-v1:0'),
   BEDROCK_VISION_MODEL: z.string().default('amazon.nova-lite-v1:0'),
   BEDROCK_EMBEDDING_MODEL: z.string().default('amazon.titan-embed-text-v2:0'),
+  /**
+   * External MCP filesystem servers. In production these are the two sidecar
+   * containers; when unset (local development) the server is started over stdio.
+   */
+  MCP_ARTWORK_URL: z.string().url().optional(),
+  MCP_REPORTS_URL: z.string().url().optional(),
+  /** Folder paths as the MCP servers see them. */
+  MCP_ARTWORK_ROOT: z.string().default('/data/artwork'),
+  MCP_REPORTS_ROOT: z.string().default('/data/reports'),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema>;

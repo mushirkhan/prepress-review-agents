@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BedrockVision, createReviewModels, TitanEmbedder } from '../src/adapters/bedrock.js';
 import { LocalArtworkStore } from '../src/adapters/localStore.js';
+import { createMcpArtworkStore } from '../src/adapters/mcp.js';
 import { createJobContext } from '../src/agents/context.js';
 import { reviewArtwork } from '../src/agents/review.js';
 import type { TraceEvent } from '../src/agents/trace.js';
@@ -36,6 +37,8 @@ function describeEvent(e: TraceEvent): string {
     }
     case 'tool.error':
       return `  ✗ ${d.tool}: ${d.error}`;
+    case 'mcp.call':
+      return `    ↳ MCP ${d.server}.${d.tool} ${d.ok ? 'ok' : `FAILED: ${d.error}`} (${d.durationMs} ms)`;
     case 'guardrail.blocked':
       return `⛔ ${e.agent} tried ${d.attempted}: blocked`;
     case 'verdict':
@@ -55,10 +58,12 @@ if (!sample || sample.category === 'invalid') {
   process.exit(2);
 }
 
-const config = loadConfig();
-const store = new LocalArtworkStore(await mkdtemp(join(tmpdir(), 'prepress-')));
+const dataDir = await mkdtemp(join(tmpdir(), 'prepress-'));
+const config = loadConfig({ ...process.env, DATA_DIR: dataDir });
 const jobId = `live-${sample.id}`.slice(0, 64);
-await store.saveArtwork(jobId, await readFile(join(SAMPLES_DIR, sample.file)));
+// The upload is written by the API's own code; agents then read it through the external MCP server.
+await new LocalArtworkStore(dataDir).saveArtwork(jobId, await readFile(join(SAMPLES_DIR, sample.file)));
+const store = await createMcpArtworkStore(config);
 
 const job = createJobContext({
   jobId,
@@ -75,4 +80,5 @@ const result = await reviewArtwork(job, createReviewModels(config));
 console.log(`\nVerdict:   ${result.verdict}  (expected ${sample.expected.verdict})`);
 console.log(`Issues:    ${result.issues.map((i) => i.code).join(', ') || 'none'}`);
 console.log(`Violations:${result.violations.length}  Tokens: ${result.usage.inputTokens} in / ${result.usage.outputTokens} out  Time: ${result.durationMs} ms`);
-console.log(`Report:    ${join(tmpdir(), '…', result.reportPath ?? '')}`);
+console.log(`Report:    ${join(dataDir, result.reportPath ?? '')}`);
+await store.close();

@@ -26,7 +26,11 @@ export interface JobContext {
   trace: TraceRecorder;
   deps: { store: ArtworkStore; vision: VisionReader; embedder?: Embedder | undefined };
   state: {
-    artwork?: Buffer;
+    /**
+     * In-flight loads, shared by tools that run in parallel within one model
+     * step, so the artwork is read once and the vision model is called once.
+     */
+    loads: Map<string, Promise<unknown>>;
     metadata?: ImageMetadata;
     vision?: VisionResult;
     /** Latest issues reported by each tool, keyed "agent:tool". */
@@ -50,6 +54,7 @@ export function createJobContext(input: Pick<JobContext, 'jobId' | 'ticket' | 'd
     ...input,
     trace: new TraceRecorder(),
     state: {
+      loads: new Map(),
       toolIssues: new Map(),
       completedTools: new Map(),
       delegations: new Map(),
@@ -73,6 +78,23 @@ export function jobFrom(requestContext: { get(key: string): unknown } | undefine
 
 export interface AgentIssue extends Issue {
   agent: AgentId;
+}
+
+/** Runs `load` once per job and key; concurrent callers share the same promise. */
+export function once<T>(job: JobContext, key: string, load: () => Promise<T>): Promise<T> {
+  let p = job.state.loads.get(key) as Promise<T> | undefined;
+  if (!p) {
+    p = load();
+    job.state.loads.set(key, p);
+    // A failed load may be retried by a later tool call.
+    p.catch(() => job.state.loads.delete(key));
+  }
+  return p;
+}
+
+/** Records calls a tool makes to external servers (the MCP filesystem) in the trace. */
+export function observeCalls(job: JobContext, agent: AgentId) {
+  return (call: { server: string; tool: string }) => job.trace.record('mcp.call', agent, { ...call });
 }
 
 export function collectIssues(job: JobContext): AgentIssue[] {

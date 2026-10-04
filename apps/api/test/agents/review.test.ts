@@ -198,3 +198,52 @@ describe('reviewArtwork: guardrails and failure handling', () => {
     expect(result.verdict).toBe('NEEDS_HUMAN_REVIEW'); // the IP check never ran
   });
 });
+
+describe('reviewArtwork with the external MCP filesystem server', () => {
+  it('reads the artwork and writes the report through MCP, visible in the trace', async () => {
+    const { mkdtemp, mkdir, writeFile, readFile: read } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { McpArtworkStore, McpFilesystem, stdioFilesystemServer } = await import('../../src/adapters/mcp.js');
+    const root = await mkdtemp(join(tmpdir(), 'mcp-review-'));
+    const dirs = { artwork: join(root, 'artwork'), reports: join(root, 'reports') };
+    await mkdir(dirs.artwork);
+    await mkdir(dirs.reports);
+    const sample = samples.get('flyer-nike')!;
+    await writeFile(join(dirs.artwork, 'job-mcp-1.img'), await read(join(SAMPLES_DIR, sample.file)));
+    const store = new McpArtworkStore(
+      await new McpFilesystem('mcp-artwork', stdioFilesystemServer(dirs.artwork), ['read_media_file']).connect(),
+      await new McpFilesystem('mcp-reports', stdioFilesystemServer(dirs.reports), ['write_file']).connect(),
+      dirs,
+    );
+    try {
+      const job = createJobContext({
+        jobId: 'job-mcp-1',
+        ticket: JobTicketSchema.parse(sample.ticket),
+        deps: { store, vision: new FakeVision({ texts: sample.printedText, logos: [] }) },
+      });
+      const specialist = specialistModel({ preflight: SCRIPTS.preflight(), ip: SCRIPTS.ip(), report: SCRIPTS.report() });
+      const result = await reviewArtwork(job, { orchestrator: scriptedModel('o', SCRIPTS.orchestrator('REJECT')).model, specialist: specialist.model });
+
+      expect(result.verdict).toBe('REJECT');
+      const mcpCalls = result.trace.filter((e) => e.type === 'mcp.call').map((e) => `${e.agent}:${e.data.server}.${e.data.tool}`);
+      expect(mcpCalls).toEqual(['preflight-agent:mcp-artwork.read_media_file', 'report-agent:mcp-reports.write_file']);
+      expect(await read(join(dirs.reports, 'job-mcp-1.md'), 'utf8')).toMatch(/Verdict \(decided by policy\): REJECT/);
+    } finally {
+      await store.close();
+    }
+  }, 30_000);
+});
+
+describe('reviewArtwork: parallel tool calls', () => {
+  it('reads the artwork once and calls vision once even when tools run in parallel', async () => {
+    const { store, vision } = await run({
+      sample: 'flyer-nike',
+      ip: [
+        { toolCalls: [{ toolName: 'inspect_artwork_image' }, { toolName: 'match_protected_marks' }, { toolName: 'detect_injection' }] },
+        { text: 'done' },
+      ],
+    });
+    expect(store.reads).toEqual(['job-flyer-nike']);
+    expect(vision.calls).toBe(1);
+  });
+});

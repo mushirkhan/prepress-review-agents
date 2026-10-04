@@ -1,16 +1,14 @@
 import { issue, type Issue } from '../../domain/issues.js';
 import { detectInjection } from '../../tools/ip/injection.js';
 import { logoDescriptionCorpus, matchProtectedMarks } from '../../tools/ip/protectedMarks.js';
-import type { JobContext } from '../context.js';
+import { type JobContext, once } from '../context.js';
+import { loadArtwork } from './preflight.js';
 import type { VisionResult } from '../ports.js';
 import { jobTool, noInput } from '../toolkit.js';
 
 /** One vision call per run; every IP tool reads the cached result. */
 export async function ensureVision(job: JobContext): Promise<VisionResult> {
-  if (!job.state.vision) {
-    job.state.artwork ??= await job.deps.store.readArtwork(job.jobId);
-    job.state.vision = await job.deps.vision.describe(job.state.artwork);
-  }
+  job.state.vision ??= await once(job, 'vision', async () => job.deps.vision.describe(await loadArtwork(job, 'ip-agent')));
   return job.state.vision;
 }
 

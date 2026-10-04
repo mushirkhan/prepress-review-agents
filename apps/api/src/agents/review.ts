@@ -1,7 +1,7 @@
 import { Agent } from '@mastra/core/agent';
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
-import { type AgentId, type AgentIssue, collectIssues, type JobContext, jobFrom, toRequestContext } from './context.js';
+import { type AgentId, type AgentIssue, collectIssues, type JobContext, jobFrom, observeCalls, toRequestContext } from './context.js';
 import {
   fallbackReport,
   IP_INSTRUCTIONS,
@@ -312,7 +312,7 @@ export async function reviewArtwork(job: JobContext, models: ReviewModels, limit
     }
   }
   if (!job.state.reportPath) {
-    job.state.reportPath = await job.deps.store.saveReport(job.jobId, fallbackReport(job, decision, issues));
+    job.state.reportPath = await job.deps.store.saveReport(job.jobId, fallbackReport(job, decision, issues), observeCalls(job, 'orchestrator'));
     job.trace.record('tool.result', 'runtime', { tool: 'fallback_report', result: { path: job.state.reportPath } });
   }
 

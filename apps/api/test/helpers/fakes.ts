@@ -26,6 +26,7 @@ export class MemoryStore implements ArtworkStore {
 
   async readArtwork(jobId: string): Promise<Buffer> {
     this.reads.push(jobId);
+    await new Promise((r) => setTimeout(r, 5)); // behave like real I/O
     const buf = this.artwork.get(jobId);
     if (!buf) throw new Error(`no artwork for job ${jobId}`);
     return buf;
@@ -43,6 +44,7 @@ export class FakeVision implements VisionReader {
   constructor(private readonly result: VisionResult | Error) {}
   async describe(): Promise<VisionResult> {
     this.calls += 1;
+    await new Promise((r) => setTimeout(r, 5));
     if (this.result instanceof Error) throw this.result;
     return this.result;
   }
