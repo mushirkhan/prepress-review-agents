@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "samples": "tsx scripts/generate-samples.ts",
-    "review": "node --env-file-if-exists=../../.env --import tsx scripts/review-sample.ts"
+    "review": "node --env-file-if-exists=../../.env --import tsx scripts/review-sample.ts",
+    "eval": "node --env-file-if-exists=../../.env --disable-warning=ExperimentalWarning --import tsx evals/run.ts"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^5.0.105",
