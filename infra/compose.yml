@@ -2,7 +2,15 @@
 # Shipped by CI over SSH and applied by deploy.sh; do not edit on the VM.
 #
 # No service publishes a port. Public traffic arrives only through the
-# Cloudflare Tunnel, which reaches containers by name on the internal network.
+# Cloudflare Tunnel, which reaches containers by name.
+#
+# Networks:
+#   edge      cloudflared, web, api  (what the tunnel can reach)
+#   internal  api, mcp-artwork, mcp-reports  (no internet access)
+#
+# Folder access (defence in depth for the external MCP server):
+#   /srv/prepress/data/artwork  api: rw (saves uploads)   mcp-artwork: ro
+#   /srv/prepress/data/reports  api: ro (serves reports)  mcp-reports: rw
 name: prepress
 
 x-hardening: &hardening
@@ -17,6 +25,7 @@ services:
     command: tunnel --no-autoupdate run
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN:?TUNNEL_TOKEN must be set in .env}
+    networks: [edge]
 
   api:
     <<: *hardening
@@ -24,8 +33,14 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    networks: [edge, internal]
+    depends_on:
+      mcp-artwork: { condition: service_healthy }
+      mcp-reports: { condition: service_healthy }
     volumes:
-      - /srv/prepress/data:/data
+      - /srv/prepress/data/artwork:/data/artwork
+      - /srv/prepress/data/reports:/data/reports:ro
+      - /srv/prepress/data/db:/data/db
     # Pass only what the API needs. The tunnel token stays out of this container.
     environment:
       - APP_VERSION=${IMAGE_TAG}
@@ -43,8 +58,49 @@ services:
       - COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID:-}
       - COGNITO_CLIENT_ID=${COGNITO_CLIENT_ID:-}
       - COGNITO_REQUIRED_GROUP=${COGNITO_REQUIRED_GROUP:-prepress-reviewers}
+      - MCP_ARTWORK_URL=http://mcp-artwork:8000/mcp
+      - MCP_REPORTS_URL=http://mcp-reports:8000/mcp
+      - MCP_ARTWORK_ROOT=/data/artwork
+      - MCP_REPORTS_ROOT=/data/reports
+
+  # External MCP filesystem server, instance 1: can see only the artwork
+  # folder, mounted read-only. The api only ever calls read_media_file here.
+  mcp-artwork:
+    <<: *hardening
+    image: registry.gitlab.com/genai-rag/prepress-review-agents/mcp-filesystem:${IMAGE_TAG:?IMAGE_TAG is required}
+    command: ["mcp-server-filesystem /data/artwork"]
+    read_only: true
+    tmpfs: [/tmp]
+    networks: [internal]
+    volumes:
+      - /srv/prepress/data/artwork:/data/artwork:ro
+    healthcheck: &mcp-health
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Instance 2: can see only the reports folder. The api only ever calls
+  # write_file here.
+  mcp-reports:
+    <<: *hardening
+    image: registry.gitlab.com/genai-rag/prepress-review-agents/mcp-filesystem:${IMAGE_TAG:?IMAGE_TAG is required}
+    command: ["mcp-server-filesystem /data/reports"]
+    read_only: true
+    tmpfs: [/tmp]
+    networks: [internal]
+    volumes:
+      - /srv/prepress/data/reports:/data/reports
+    healthcheck: *mcp-health
 
   # Placeholder until the web app lands; keeps prepress.gemsofy.com routed.
   web:
     <<: *hardening
     image: traefik/whoami
+    networks: [edge]
+
+networks:
+  edge: {}
+  # No route to the internet: the MCP servers only talk to the api.
+  internal:
+    internal: true

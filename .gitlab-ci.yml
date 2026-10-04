@@ -2,7 +2,7 @@
 # Runs on the self-hosted GenAI-RAG group runner on the Proxmox server.
 #
 #   check   every push        lint, typecheck, offline tests (no AWS calls)
-#   build   main only         build the API image, push to the GitLab registry
+#   build   main only         build the API and MCP sidecar images, push to the GitLab registry
 #   deploy  main only         ship compose.yml + image tag to the app VM
 
 stages: [check, build, deploy]
@@ -13,6 +13,7 @@ default:
 
 variables:
   API_IMAGE: $CI_REGISTRY_IMAGE/api
+  MCP_IMAGE: $CI_REGISTRY_IMAGE/mcp-filesystem
   npm_config_cache: $CI_PROJECT_DIR/.npm
 
 .main_only: &main_only
@@ -32,7 +33,7 @@ check:
     - npm run typecheck
     - npm test
 
-build_api:
+build_images:
   stage: build
   <<: *main_only
   image: docker:27
@@ -45,6 +46,8 @@ build_api:
   script:
     - docker build -f apps/api/Dockerfile -t "$API_IMAGE:$CI_COMMIT_SHORT_SHA" .
     - docker push "$API_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker build -t "$MCP_IMAGE:$CI_COMMIT_SHORT_SHA" infra/mcp-filesystem
+    - docker push "$MCP_IMAGE:$CI_COMMIT_SHORT_SHA"
 
 deploy:
   stage: deploy
