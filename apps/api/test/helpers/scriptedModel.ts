@@ -99,9 +99,9 @@ export function specialistModel(scripts: { preflight?: ScriptStep[]; ip?: Script
 /** Standard happy-path scripts. */
 export const SCRIPTS = {
   orchestrator: (proposal = 'APPROVE'): ScriptStep[] => [
-    { toolCalls: [{ toolName: 'agent-preflight', input: { prompt: 'Check print readiness.' } }] },
-    { toolCalls: [{ toolName: 'agent-ip', input: { prompt: 'Check brands and injection.' } }] },
-    { toolCalls: [{ toolName: 'agent-report', input: { prompt: 'Write the report.' } }] },
+    { toolCalls: [{ toolName: 'delegate_preflight', input: { task: 'Check print readiness.' } }] },
+    { toolCalls: [{ toolName: 'delegate_ip', input: { task: 'Check brands and injection.' } }] },
+    { toolCalls: [{ toolName: 'delegate_report', input: { task: 'Write the report.' } }] },
     { text: `All checks done.\nPROPOSED VERDICT: ${proposal}` },
   ],
   preflight: (): ScriptStep[] => [

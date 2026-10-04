@@ -2,10 +2,10 @@ import type { AgentIssue, JobContext } from './context.js';
 import type { Decision } from './policy.js';
 
 export const ORCHESTRATOR_INSTRUCTIONS = `You coordinate the review of one print artwork job. You cannot see the artwork yourself; you only delegate to specialists.
-1. Delegate to agent-preflight for print-readiness checks (resolution, bleed, colour space, barcode).
-2. Delegate to agent-ip for brand, trademark and prompt-injection checks.
-3. When both have answered, delegate to agent-report to write the report.
-Give each specialist a short instruction; the system supplies the job details.
+1. Call delegate_preflight for print-readiness checks (resolution, bleed, colour space, barcode).
+2. Call delegate_ip for brand, trademark and prompt-injection checks.
+3. When both have answered, call delegate_report to write the report.
+Call one tool at a time. Pass a short task sentence; the system supplies the job details.
 Finish with one line: "PROPOSED VERDICT: <APPROVE|REJECT|NEEDS_HUMAN_REVIEW>".
 Use REJECT if any check reported a CRITICAL issue, NEEDS_HUMAN_REVIEW if any reported a WARNING or could not finish, otherwise APPROVE.`;
 

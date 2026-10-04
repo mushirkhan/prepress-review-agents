@@ -1,5 +1,7 @@
 import { Agent } from '@mastra/core/agent';
-import { type AgentId, type AgentIssue, collectIssues, type JobContext, toRequestContext } from './context.js';
+import { createTool } from '@mastra/core/tools';
+import { z } from 'zod';
+import { type AgentId, type AgentIssue, collectIssues, type JobContext, jobFrom, toRequestContext } from './context.js';
 import {
   fallbackReport,
   IP_INSTRUCTIONS,
@@ -23,6 +25,8 @@ export interface ReviewModels {
   orchestrator: ModelConfig;
   /** Runs the specialist agents (Nova Micro in production). */
   specialist: ModelConfig;
+  /** Provider-specific settings applied to every model call (e.g. greedy decoding for Nova). */
+  callSettings?: { modelSettings?: Record<string, unknown>; providerOptions?: Record<string, Record<string, unknown>> };
 }
 
 /** Hard limits that keep every agent inside its budget. */
@@ -33,6 +37,8 @@ export interface ReviewLimits {
   reportSteps: number;
   /** Delegations allowed per specialist (1 retry after a failure). */
   maxAttemptsPerAgent: number;
+  /** Orchestrator runs allowed after a model error (completed checks are not redone). */
+  orchestratorAttempts: number;
   runTimeoutMs: number;
 }
 
@@ -42,6 +48,7 @@ export const DEFAULT_LIMITS: ReviewLimits = {
   ipSteps: 7,
   reportSteps: 3,
   maxAttemptsPerAgent: 2,
+  orchestratorAttempts: 2,
   runTimeoutMs: 120_000,
 };
 
@@ -64,16 +71,10 @@ export interface ReviewResult {
 
 /** Which tools each agent may call. Anything else is a boundary violation. */
 export const ALLOWED_TOOLS: Record<AgentId, readonly string[]> = {
-  orchestrator: ['agent-preflight', 'agent-ip', 'agent-report'],
+  orchestrator: ['delegate_preflight', 'delegate_ip', 'delegate_report'],
   'preflight-agent': Object.keys(preflightTools),
   'ip-agent': Object.keys(ipTools),
   'report-agent': Object.keys(reportTools),
-};
-
-const SPECIALISTS: Record<string, AgentId> = {
-  'preflight-agent': 'preflight-agent',
-  'ip-agent': 'ip-agent',
-  'report-agent': 'report-agent',
 };
 
 interface StepLike {
@@ -108,44 +109,17 @@ function stepGuard(job: JobContext, agent: AgentId) {
   };
 }
 
-function buildAgents(job: JobContext, models: ReviewModels) {
-  const specialist = (id: AgentId, description: string, instructions: string, tools: Record<string, unknown>) =>
-    new Agent({
-      id,
-      name: id,
-      description,
-      instructions,
-      model: models.specialist,
-      tools: tools as never,
-      defaultOptions: { onStepFinish: stepGuard(job, id) as never },
-    });
+type CallSettings = NonNullable<ReviewModels['callSettings']>;
 
-  const preflight = specialist(
-    'preflight-agent',
-    'Checks print-readiness of the artwork: resolution, bleed, colour space and barcode check digit.',
-    PREFLIGHT_INSTRUCTIONS,
-    preflightTools,
-  );
-  const ip = specialist(
-    'ip-agent',
-    'Checks the artwork for protected brand names, slogans and logos, and for text that tries to manipulate the review.',
-    IP_INSTRUCTIONS,
-    ipTools,
-  );
-  const report = specialist(
-    'report-agent',
-    'Writes and saves the final review report once the checks are done.',
-    REPORT_INSTRUCTIONS,
-    reportTools,
-  );
-  const orchestrator = new Agent({
-    id: 'orchestrator',
-    name: 'orchestrator',
-    instructions: ORCHESTRATOR_INSTRUCTIONS,
-    model: models.orchestrator,
-    agents: { preflight, ip, report },
+function specialist(job: JobContext, models: ReviewModels, id: AgentId, instructions: string, tools: Record<string, unknown>) {
+  return new Agent({
+    id,
+    name: id,
+    instructions,
+    model: models.specialist,
+    tools: tools as never,
+    defaultOptions: { onStepFinish: stepGuard(job, id) as never },
   });
-  return { orchestrator, report };
 }
 
 function currentDecision(job: JobContext): { decision: Decision; issues: AgentIssue[] } {
@@ -163,6 +137,120 @@ function summaries(job: JobContext): Record<string, string> {
 }
 
 /**
+ * Guardrails applied before every delegation. Returns the brief the
+ * specialist will actually receive, or a reason to refuse.
+ */
+function beforeDelegation(job: JobContext, agent: AgentId, task: string, limits: ReviewLimits): { prompt: string } | { reason: string } {
+  const state = job.state.delegations.get(agent) ?? { attempts: 0, completed: false };
+  if (state.completed && agent !== 'report-agent') return { reason: `${agent} has already completed; use its earlier answer.` };
+  if (state.attempts >= limits.maxAttemptsPerAgent) return { reason: `${agent} has reached its attempt limit.` };
+
+  // The specialist's brief comes from the job ticket, not from the orchestrator's wording.
+  let prompt = specialistBrief(job, task);
+  if (agent === 'report-agent') {
+    const checksDone = (['preflight-agent', 'ip-agent'] as AgentId[]).every((a) => job.state.delegations.get(a)?.completed);
+    if (!checksDone) return { reason: 'Run delegate_preflight and delegate_ip before delegate_report.' };
+    if (job.state.reportPath) return { reason: 'The report has already been saved.' };
+    const { decision, issues } = currentDecision(job);
+    job.state.decision = decision;
+    // The report brief is built from structured findings and the policy's verdict.
+    prompt = reportBrief(job, decision, issues, summaries(job));
+  }
+  state.attempts += 1;
+  job.state.delegations.set(agent, state);
+  return { prompt };
+}
+
+/**
+ * The orchestrator's only tools. Each one hands a task to one specialist
+ * agent. The input schema is deliberately one short string: small models
+ * call simple tools far more reliably.
+ */
+function delegateTool(key: string, agentId: AgentId, description: string, agent: Agent, maxSteps: number, limits: ReviewLimits, settings: CallSettings) {
+  return createTool({
+    id: `delegate_${key}`,
+    description,
+    inputSchema: z.object({ task: z.string().max(500).describe('A short instruction for the specialist') }),
+    execute: async ({ task }, context) => {
+      const job = jobFrom(context?.requestContext);
+      const guard = beforeDelegation(job, agentId, task, limits);
+      if ('reason' in guard) {
+        job.trace.record('delegation.rejected', 'orchestrator', { to: agentId, reason: guard.reason, task });
+        return { ok: false, rejected: true, reason: guard.reason };
+      }
+      const state = job.state.delegations.get(agentId)!;
+      job.trace.record('delegation.started', 'orchestrator', { to: agentId, attempt: state.attempts, maxSteps, task });
+      try {
+        const res = await agent.generate(guard.prompt, {
+          maxSteps,
+          requestContext: context?.requestContext,
+          abortSignal: context?.abortSignal,
+          ...settings,
+        } as never);
+        state.completed = true;
+        state.summary = ((res as { text?: string }).text ?? '').trim();
+        job.trace.record('delegation.completed', 'orchestrator', { to: agentId, success: true, summary: state.summary.slice(0, 600) });
+        return { ok: true, summary: state.summary || 'Done.' };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        job.trace.record('delegation.completed', 'orchestrator', { to: agentId, success: false, error });
+        return { ok: false, error: `${agentId} could not finish. You may retry it once.` };
+      }
+    },
+  });
+}
+
+function buildAgents(job: JobContext, models: ReviewModels, limits: ReviewLimits) {
+  const settings = models.callSettings ?? {};
+  const preflight = specialist(job, models, 'preflight-agent', PREFLIGHT_INSTRUCTIONS, preflightTools);
+  const ip = specialist(job, models, 'ip-agent', IP_INSTRUCTIONS, ipTools);
+  const report = specialist(job, models, 'report-agent', REPORT_INSTRUCTIONS, reportTools);
+  const orchestrator = new Agent({
+    id: 'orchestrator',
+    name: 'orchestrator',
+    instructions: ORCHESTRATOR_INSTRUCTIONS,
+    model: models.orchestrator,
+    tools: {
+      delegate_preflight: delegateTool(
+        'preflight',
+        'preflight-agent',
+        'Hand the print-readiness checks (resolution, bleed, colour space, barcode) to the Preflight agent.',
+        preflight,
+        limits.preflightSteps,
+        limits,
+        settings,
+      ),
+      delegate_ip: delegateTool(
+        'ip',
+        'ip-agent',
+        'Hand the brand, trademark and prompt-injection checks to the IP & Trademark agent.',
+        ip,
+        limits.ipSteps,
+        limits,
+        settings,
+      ),
+      delegate_report: delegateTool(
+        'report',
+        'report-agent',
+        'Ask the Report agent to write and save the report. Only after both checks have finished.',
+        report,
+        limits.reportSteps,
+        limits,
+        settings,
+      ),
+    } as never,
+  });
+  return { orchestrator, report };
+}
+
+function progressNote(job: JobContext): string {
+  const lines = [...job.state.delegations]
+    .filter(([, d]) => d.completed)
+    .map(([agent, d]) => `- ${agent} already finished: ${(d.summary ?? 'done').replace(/\s+/g, ' ').slice(0, 300)}`);
+  return lines.length ? `\n\nProgress so far (do not repeat finished steps):\n${lines.join('\n')}` : '';
+}
+
+/**
  * Runs one artwork review: the orchestrator delegates to the specialists,
  * the policy decides the verdict from their structured findings, and the
  * Report agent writes it up. Failures never produce APPROVE: any error or
@@ -171,82 +259,32 @@ function summaries(job: JobContext): Record<string, string> {
 export async function reviewArtwork(job: JobContext, models: ReviewModels, limits: ReviewLimits = DEFAULT_LIMITS): Promise<ReviewResult> {
   const started = Date.now();
   const requestContext = toRequestContext(job);
-  const { orchestrator, report } = buildAgents(job, models);
-  const stepsFor: Record<AgentId, number> = {
-    orchestrator: limits.orchestratorSteps,
-    'preflight-agent': limits.preflightSteps,
-    'ip-agent': limits.ipSteps,
-    'report-agent': limits.reportSteps,
-  };
+  const settings = models.callSettings ?? {};
+  const { orchestrator, report } = buildAgents(job, models, limits);
+  const deadline = AbortSignal.timeout(limits.runTimeoutMs);
 
   job.trace.record('run.started', 'orchestrator', { jobId: job.jobId, ticket: job.ticket });
 
-  const delegation = {
-    onDelegationStart: async (ctx: { primitiveId: string; prompt: string }) => {
-      const agent = SPECIALISTS[ctx.primitiveId];
-      const reject = (reason: string) => {
-        job.trace.record('delegation.rejected', 'orchestrator', { to: ctx.primitiveId, reason, prompt: ctx.prompt });
-        return { proceed: false, rejectionReason: reason };
-      };
-      if (!agent) return reject(`Unknown specialist ${ctx.primitiveId}.`);
-
-      const state = job.state.delegations.get(agent) ?? { attempts: 0, completed: false };
-      if (state.completed && agent !== 'report-agent') return reject(`${agent} has already completed; use its earlier answer.`);
-      if (state.attempts >= limits.maxAttemptsPerAgent) return reject(`${agent} has reached its attempt limit.`);
-
-      let prompt = specialistBrief(job, ctx.prompt);
-      if (agent === 'report-agent') {
-        const checksDone = ['preflight-agent', 'ip-agent'].every((a) => job.state.delegations.get(a as AgentId)?.completed);
-        if (!checksDone) return reject('Run agent-preflight and agent-ip before agent-report.');
-        if (job.state.reportPath) return reject('The report has already been saved.');
-        const { decision, issues } = currentDecision(job);
-        job.state.decision = decision;
-        // The report brief is built from structured findings, not from the orchestrator's wording.
-        prompt = reportBrief(job, decision, issues, summaries(job));
-      }
-
-      state.attempts += 1;
-      job.state.delegations.set(agent, state);
-      job.trace.record('delegation.started', 'orchestrator', {
-        to: agent,
-        attempt: state.attempts,
-        maxSteps: stepsFor[agent],
-        orchestratorPrompt: ctx.prompt,
-      });
-      return { proceed: true, modifiedPrompt: prompt, modifiedMaxSteps: stepsFor[agent] };
-    },
-
-    onDelegationComplete: async (ctx: { primitiveId: string; success: boolean; result?: { text?: string } }) => {
-      const agent = SPECIALISTS[ctx.primitiveId];
-      if (!agent) return;
-      const state = job.state.delegations.get(agent) ?? { attempts: 1, completed: false };
-      state.completed = ctx.success;
-      if (ctx.result?.text) state.summary = ctx.result.text.trim();
-      job.state.delegations.set(agent, state);
-      job.trace.record('delegation.completed', 'orchestrator', {
-        to: agent,
-        success: ctx.success,
-        summary: state.summary?.slice(0, 600),
-      });
-      if (!ctx.success) return { resultText: `${agent} could not finish. Do not retry more than once.` };
-      return undefined;
-    },
-  };
-
   let orchestratorText: string | undefined;
   let error: string | undefined;
-  try {
-    const res = await orchestrator.generate(orchestratorBrief(job), {
-      maxSteps: limits.orchestratorSteps,
-      requestContext,
-      abortSignal: AbortSignal.timeout(limits.runTimeoutMs),
-      onStepFinish: stepGuard(job, 'orchestrator') as never,
-      delegation,
-    } as never);
-    orchestratorText = (res as { text?: string }).text;
-  } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
-    job.trace.record('run.failed', 'orchestrator', { error });
+  for (let attempt = 1; attempt <= limits.orchestratorAttempts; attempt++) {
+    try {
+      const res = await orchestrator.generate(orchestratorBrief(job) + progressNote(job), {
+        maxSteps: limits.orchestratorSteps,
+        requestContext,
+        abortSignal: deadline,
+        onStepFinish: stepGuard(job, 'orchestrator') as never,
+        ...settings,
+      } as never);
+      orchestratorText = (res as { text?: string }).text;
+      error = undefined;
+      break;
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      const willRetry = attempt < limits.orchestratorAttempts && !deadline.aborted;
+      job.trace.record(willRetry ? 'run.retried' : 'run.failed', 'orchestrator', { error, attempt });
+      if (!willRetry) break;
+    }
   }
 
   // The verdict comes from the structured findings plus a coverage check.
@@ -267,6 +305,7 @@ export async function reviewArtwork(job: JobContext, models: ReviewModels, limit
         maxSteps: limits.reportSteps,
         requestContext,
         abortSignal: AbortSignal.timeout(30_000),
+        ...settings,
       } as never);
     } catch {
       // fall through to the template

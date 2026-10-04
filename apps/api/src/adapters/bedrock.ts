@@ -16,6 +16,13 @@ export function createReviewModels(config: AppConfig): ReviewModels {
   return {
     orchestrator: bedrock(config.BEDROCK_ORCHESTRATOR_MODEL) as never,
     specialist: bedrock(config.BEDROCK_SPECIALIST_MODEL) as never,
+    // AWS recommends greedy decoding for Nova tool use: without it Nova can emit
+    // malformed tool calls ("Model produced invalid sequence as part of ToolUse").
+    // Nova takes topK through additionalModelRequestFields, not inferenceConfig.
+    callSettings: {
+      modelSettings: { temperature: 0, maxOutputTokens: 1000 },
+      providerOptions: { amazonBedrock: { additionalModelRequestFields: { inferenceConfig: { topK: 1 } } } },
+    },
   };
 }
 

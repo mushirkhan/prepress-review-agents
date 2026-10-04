@@ -8,6 +8,7 @@ export type TraceEventType =
   | 'run.started'
   | 'run.completed'
   | 'run.failed'
+  | 'run.retried'
   | 'delegation.started'
   | 'delegation.rejected'
   | 'delegation.completed'

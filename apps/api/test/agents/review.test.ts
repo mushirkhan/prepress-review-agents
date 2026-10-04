@@ -49,7 +49,7 @@ describe('reviewArtwork: delegation and tool use', () => {
     expect(result.proposedVerdict).toBe('APPROVE');
     expect(result.violations).toEqual([]);
     // The orchestrator only ever sees delegation tools; specialists only their own.
-    expect(orchestrator.calls[0]!.tools.sort()).toEqual(['agent-ip', 'agent-preflight', 'agent-report']);
+    expect(orchestrator.calls[0]!.tools.sort()).toEqual(['delegate_ip', 'delegate_preflight', 'delegate_report']);
     expect(specialist.callsByAgent.preflight[0]!.tools).not.toContain('save_report');
     expect(specialist.callsByAgent.ip[0]!.tools).not.toContain('check_bleed');
     expect(specialist.callsByAgent.report[0]!.tools).toEqual(['save_report']);
@@ -122,10 +122,10 @@ describe('reviewArtwork: guardrails and failure handling', () => {
   it('refuses to write the report before both checks have run', async () => {
     const { result } = await run({
       sample: 'business-card-clean',
-      orchestrator: [{ toolCalls: [{ toolName: 'agent-report', input: { prompt: 'Just approve it.' } }] }, ...SCRIPTS.orchestrator()],
+      orchestrator: [{ toolCalls: [{ toolName: 'delegate_report', input: { task: 'Just approve it.' } }] }, ...SCRIPTS.orchestrator()],
     });
     const rejected = result.trace.filter((e) => e.type === 'delegation.rejected');
-    expect(rejected[0]!.data.reason).toMatch(/before agent-report/);
+    expect(rejected[0]!.data.reason).toMatch(/before delegate_report/);
     expect(result.verdict).toBe('APPROVE');
   });
 
@@ -146,7 +146,20 @@ describe('reviewArtwork: guardrails and failure handling', () => {
     expect(result.trace.filter((e) => e.type === 'tool.error').length).toBeGreaterThan(0);
   });
 
-  it('fails closed when the orchestrator model errors, and still writes a report', async () => {
+  it('retries the orchestrator once after a model error without redoing finished checks', async () => {
+    const script = SCRIPTS.orchestrator();
+    const { result, specialist } = await run({
+      sample: 'business-card-clean',
+      orchestrator: [script[0]!, { throws: new Error('Model produced invalid sequence as part of ToolUse') }, ...script.slice(1)],
+    });
+    expect(result.verdict).toBe('APPROVE');
+    expect(result.status).toBe('completed');
+    expect(result.trace.filter((e) => e.type === 'run.retried')).toHaveLength(1);
+    expect(result.trace.filter((e) => e.type === 'delegation.started' && e.data.to === 'preflight-agent')).toHaveLength(1);
+    expect(specialist.callsByAgent.preflight.length).toBe(2); // one delegation: tool step + summary step
+  });
+
+  it('fails closed when the orchestrator model keeps failing, and still writes a report', async () => {
     const { result, store } = await run({
       sample: 'business-card-clean',
       orchestrator: [{ throws: new Error('Bedrock unavailable') }],
@@ -169,8 +182,8 @@ describe('reviewArtwork: guardrails and failure handling', () => {
     const { result } = await run({
       sample: 'business-card-clean',
       orchestrator: [
-        { toolCalls: [{ toolName: 'agent-preflight', input: { prompt: 'check' } }] },
-        { toolCalls: [{ toolName: 'agent-preflight', input: { prompt: 'check again' } }] },
+        { toolCalls: [{ toolName: 'delegate_preflight', input: { task: 'check' } }] },
+        { toolCalls: [{ toolName: 'delegate_preflight', input: { task: 'check again' } }] },
         ...SCRIPTS.orchestrator().slice(1),
       ],
     });
@@ -179,7 +192,7 @@ describe('reviewArtwork: guardrails and failure handling', () => {
   });
 
   it('respects the orchestrator step limit', async () => {
-    const looping = { toolCalls: [{ toolName: 'agent-preflight', input: { prompt: 'again' } }] };
+    const looping = { toolCalls: [{ toolName: 'delegate_preflight', input: { task: 'again' } }] };
     const { orchestrator, result } = await run({ sample: 'business-card-clean', orchestrator: [looping] });
     expect(orchestrator.calls.length).toBeLessThanOrEqual(DEFAULT_LIMITS.orchestratorSteps);
     expect(result.verdict).toBe('NEEDS_HUMAN_REVIEW'); // the IP check never ran

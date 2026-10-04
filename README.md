@@ -39,14 +39,14 @@ _TODO_
 
 | Agent | Model | Responsibility | Tools | Cannot |
 |---|---|---|---|---|
-| **Orchestrator** | Nova Lite | Plans the review and delegates; proposes a verdict | `agent-preflight`, `agent-ip`, `agent-report` (delegation only) | See the artwork, run checks, write files |
+| **Orchestrator** | Nova Lite | Plans the review and delegates; proposes a verdict | `delegate_preflight`, `delegate_ip`, `delegate_report` (delegation only) | See the artwork, run checks, write files |
 | **Preflight** | Nova Micro | Print-readiness: resolution, bleed, colour space, barcode | `read_image_metadata`, `check_image_dpi`, `check_bleed`, `check_color_space`, `validate_barcode` | Judge brands, decide the verdict, write |
 | **IP & Trademark** | Nova Micro (+ Nova Lite vision inside one tool) | Protected brands, slogans, logos; manipulation attempts | `inspect_artwork_image`, `match_protected_marks`, `search_mark_descriptions`, `detect_injection` | Check print quality, decide the verdict, write |
 | **Report** | Nova Micro | Writes the report for the customer | `save_report` (the only write in the system) | Change the verdict or findings |
 
-The agents are built with [Mastra](https://mastra.ai): the orchestrator is a supervisor whose sub-agents appear to it as `agent-*` tools.
+The agents are built with [Mastra](https://mastra.ai) (agents, tools and the tool-calling loop). Delegation uses three explicit tools with a one-field input (`{ task }`) rather than Mastra's built-in sub-agent tools: their input schema has many optional and multi-type fields, and Nova Lite produced malformed tool calls with it in live testing.
 
-**How work is delegated.** The orchestrator delegates to Preflight and IP & Trademark, then to Report. Every delegation passes through a hook (`onDelegationStart`) that:
+**How work is delegated.** The orchestrator delegates to Preflight and IP & Trademark, then to Report. Every delegation tool applies the same guardrails before running the specialist:
 
 - rebuilds the specialist's brief from the job ticket, so the orchestrator's wording cannot change what is checked;
 - blocks the Report agent until both checks have finished;
