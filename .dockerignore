@@ -9,4 +9,5 @@ evals/results
 .env.*
 !.env.example
 *.md
+!samples/README.md
 infra
