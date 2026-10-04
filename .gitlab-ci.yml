@@ -4,8 +4,9 @@
 #   check   every push        lint, typecheck, offline tests (no AWS calls)
 #   build   main only         build the API and MCP sidecar images, push to the GitLab registry
 #   deploy  main only         ship compose.yml + image tag to the app VM
+#   eval    main, manual      live evaluation against Bedrock (costs a few cents)
 
-stages: [check, build, deploy]
+stages: [check, build, deploy, eval]
 
 default:
   tags: [proxmox-ci-runner]
@@ -72,3 +73,28 @@ deploy:
       "$DEPLOY_USER@$DEPLOY_HOST" "deploy $CI_COMMIT_SHORT_SHA" < infra/compose.yml
   after_script:
     - rm -f /tmp/deploy_key
+
+# Live evaluation: every sample through the real agents, Bedrock and the MCP
+# server. Manual, because it calls paid models; exits non-zero if a gate fails.
+# Needs EVAL_AWS_ACCESS_KEY_ID / EVAL_AWS_SECRET_ACCESS_KEY (protected, masked).
+eval:
+  stage: eval
+  image: node:22-slim
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  variables:
+    AWS_REGION: us-east-1
+  cache:
+    key:
+      files: [package-lock.json]
+    paths: [.npm/]
+  script:
+    - export AWS_ACCESS_KEY_ID="$EVAL_AWS_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$EVAL_AWS_SECRET_ACCESS_KEY"
+    - npm ci --prefer-offline --no-audit --no-fund
+    - npm run eval -w @prepress/api -- --repeat 1
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [apps/api/evals/results/]

@@ -133,11 +133,24 @@ npm run review -w @prepress/api -- flyer-nike  # one live review against Bedrock
 
 The agent tests use a scripted model that plays back each agent's steps, so delegation, tool use, guardrails and failure handling are tested offline, for free and deterministically.
 
-_The evaluation is added in a later milestone._
+The live evaluation is described under [Evaluation approach](#evaluation-approach).
 
 ## Evaluation approach
 
-_TODO_
+The evaluation asks **"does the system behave correctly?"**, not "is the model clever?". It runs every sample through the whole system against real Bedrock and scores each run with plain code, from the result and the trace. The full reasoning is in [`apps/api/evals/README.md`](apps/api/evals/README.md); in short:
+
+- **Ground truth by construction.** The samples are generated from known inputs, so the expected verdicts and issue codes are facts.
+- **Outcome and behaviour.** Besides the verdict and issue codes (precision and recall), each run is checked for *how* it got there: every required check ran, no out-of-scope tool calls, correct delegation order, the Report agent wrote a report that covers the findings, one artwork read through MCP, and whether the orchestrator's own proposal matched the policy.
+- **No LLM judge.** Every question here has an exact answer, so deterministic checks are cheaper, repeatable and cannot be talked round.
+- **Asymmetric gates.** Approving infringing or unprintable artwork is the costly mistake, so **unsafe approvals must be zero**; boundary violations must be zero; verdict accuracy and check completion must be at least 90%.
+- **Stability.** `--repeat N` reruns each sample and lists any whose verdict changed.
+- **The evaluation is tested too.** Offline tests show it passes a correct system and fails a broken one (a blind vision model, an agent that skips its checks).
+
+```bash
+npm run eval -w @prepress/api -- --repeat 3 --publish   # writes apps/api/evals/RESULTS.md
+```
+
+Latest results: [`apps/api/evals/RESULTS.md`](apps/api/evals/RESULTS.md).
 
 ## Deployment (CI/CD)
 
