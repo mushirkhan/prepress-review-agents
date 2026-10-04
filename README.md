@@ -20,6 +20,17 @@ This project is developed in one local repository and pushed to two remotes with
 
 `.gitlab-ci.yml` is included so the pipeline can be reviewed, but it only runs on GitLab. GitHub Actions runs lint, tests and a secret scan on every push.
 
+## Contributing safely
+
+The GitHub repository is public, so a gitleaks pre-commit hook blocks commits that contain anything that looks like a key or token. Enable it once per clone:
+
+```bash
+brew install gitleaks              # macOS; see gitleaks docs for other platforms
+git config core.hooksPath .githooks
+```
+
+GitHub Actions repeats the scan on every push as a backstop.
+
 ## Architecture
 
 _TODO_

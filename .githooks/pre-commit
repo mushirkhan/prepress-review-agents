@@ -1,0 +1,20 @@
+#!/bin/sh
+# Blocks a commit if the staged changes look like they contain a secret
+# (API keys, tokens, private keys). The GitHub repo is public, and a key
+# pushed there must be revoked: deleting the commit is not enough.
+#
+# Enable once per clone:   git config core.hooksPath .githooks
+# Install gitleaks:         brew install gitleaks   (macOS)
+
+GITLEAKS="$(command -v gitleaks || echo "$HOME/bin/gitleaks")"
+
+if [ -x "$GITLEAKS" ]; then
+  if ! "$GITLEAKS" git --pre-commit --staged --redact --no-banner; then
+    echo "pre-commit: gitleaks found a possible secret. Commit blocked." >&2
+    echo "pre-commit: remove it from the staged files, or revoke it if it is real." >&2
+    exit 1
+  fi
+else
+  echo "pre-commit: gitleaks is not installed, skipping the local secret scan." >&2
+  echo "pre-commit: CI still scans every push. Install with: brew install gitleaks" >&2
+fi
