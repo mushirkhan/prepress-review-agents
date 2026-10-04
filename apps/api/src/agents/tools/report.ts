@@ -5,7 +5,7 @@ import { jobTool } from '../toolkit.js';
 
 /** Prepended by the system to every saved report, so the verdict shown is always the policy's. */
 export function reportHeader(job: JobContext, decision: Decision): string {
-  return `<!-- job ${job.jobId} -->\n> **Verdict (decided by policy): ${decision.verdict}**\n\n`;
+  return `> **Verdict (decided by policy): ${decision.verdict}**\n\n`;
 }
 
 export const saveReportTool = jobTool({
