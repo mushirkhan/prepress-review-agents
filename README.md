@@ -98,7 +98,30 @@ File paths are built from a validated job id by the store, never by a model. Eve
 
 ## Running the application
 
-_TODO_
+### Locally
+
+```bash
+npm ci
+AUTH_MODE=dev npm run dev -w @prepress/api     # API on http://localhost:3000, no sign-in (refused in production)
+```
+
+Put the `prepress-app` IAM user's keys in a `.env` file at the repository root (see `.env.example`; it is git-ignored). Without AWS credentials the API still runs, and every review fails closed as `NEEDS_HUMAN_REVIEW`. Locally, the external MCP filesystem server is started over stdio automatically.
+
+### API
+
+All endpoints except `/healthz` need a Cognito access token issued to the `prepress-web` client for a user in the `prepress-reviewers` group.
+
+| Method and path | What it does |
+|---|---|
+| `POST /jobs` | Upload artwork (`file`, 200 KB or less) and a JSON job ticket (`ticket`). Returns `202` with the job id; the review runs in the background. Invalid uploads are refused before any model runs: `400` empty, `413` too large, `415` not a JPEG/PNG/TIFF by content, `422` undecodable. |
+| `GET /jobs` | Your jobs, newest first |
+| `GET /jobs/:id` | Status, verdict, issues per agent, agent summaries, boundary violations, token usage |
+| `GET /jobs/:id/events` | **Live trace** (Server-Sent Events): every delegation, tool call, MCP call and guardrail decision as it happens; replays finished runs; resumes with `Last-Event-ID` |
+| `GET /jobs/:id/report` | The Markdown report |
+| `GET /jobs/:id/artwork` | A browser-friendly preview of the upload |
+| `GET /samples`, `GET /samples/:id/file` | The sample set, for trying the app |
+
+Each user can start 10 reviews per 10 minutes, and at most 2 reviews run at once. Another user's job always returns `404`.
 
 ## Running the tests and evaluations
 
