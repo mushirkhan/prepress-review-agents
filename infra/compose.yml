@@ -93,10 +93,12 @@ services:
       - /srv/prepress/data/reports:/data/reports
     healthcheck: *mcp-health
 
-  # Placeholder until the web app lands; keeps prepress.gemsofy.com routed.
+  # The web app: static files served by nginx.
   web:
     <<: *hardening
-    image: traefik/whoami
+    image: registry.gitlab.com/genai-rag/prepress-review-agents/web:${IMAGE_TAG:?IMAGE_TAG is required}
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run, /tmp]
     networks: [edge]
 
 networks:
