@@ -37,7 +37,26 @@ _TODO_
 
 ## How responsibilities are divided between agents
 
-_TODO_
+| Agent | Model | Responsibility | Tools | Cannot |
+|---|---|---|---|---|
+| **Orchestrator** | Nova Lite | Plans the review and delegates; proposes a verdict | `agent-preflight`, `agent-ip`, `agent-report` (delegation only) | See the artwork, run checks, write files |
+| **Preflight** | Nova Micro | Print-readiness: resolution, bleed, colour space, barcode | `read_image_metadata`, `check_image_dpi`, `check_bleed`, `check_color_space`, `validate_barcode` | Judge brands, decide the verdict, write |
+| **IP & Trademark** | Nova Micro (+ Nova Lite vision inside one tool) | Protected brands, slogans, logos; manipulation attempts | `inspect_artwork_image`, `match_protected_marks`, `search_mark_descriptions`, `detect_injection` | Check print quality, decide the verdict, write |
+| **Report** | Nova Micro | Writes the report for the customer | `save_report` (the only write in the system) | Change the verdict or findings |
+
+The agents are built with [Mastra](https://mastra.ai): the orchestrator is a supervisor whose sub-agents appear to it as `agent-*` tools.
+
+**How work is delegated.** The orchestrator delegates to Preflight and IP & Trademark, then to Report. Every delegation passes through a hook (`onDelegationStart`) that:
+
+- rebuilds the specialist's brief from the job ticket, so the orchestrator's wording cannot change what is checked;
+- blocks the Report agent until both checks have finished;
+- stops repeat delegations to an agent that already finished, and caps attempts and steps per agent.
+
+**How information flows.** Tools read the job's file from the run's context, never from a path chosen by a model. Each tool returns a small result for the model to reason about and records structured `Issue`s for the system. The verdict is computed by code from those issues (`decideVerdict`): any `CRITICAL` → **REJECT**, any `WARNING` → **NEEDS_HUMAN_REVIEW**, otherwise **APPROVE**. A required check that did not run becomes `CHECK_INCOMPLETE` (a warning), so a model cannot produce a pass by skipping work. The Report agent receives the policy's verdict and the findings, and the system writes the verdict line into the saved report itself.
+
+**Why models at all?** Models decide which checks to run, read the text on the image, judge context ("apple" in "apple juice") and explain results in plain language. Measurements and the final decision are deterministic code, so they are testable, repeatable and cannot be talked out of a finding.
+
+**Failure handling.** Tool errors come back to the agent as values; tools time out; vision output is schema-checked and retried once; Bedrock throttling is retried with backoff. If anything still fails, the review fails closed (never APPROVE) and a report is always written, from a template if the Report agent did not save one. Every step is recorded in a trace (delegations, tool calls, results, blocked calls, verdict) that drives the live timeline and the evaluation.
 
 ## Tools and the external MCP server
 
@@ -55,7 +74,7 @@ Agents act only through tools. The domain tools are plain, deterministic TypeScr
 
 Every tool returns structured `Issue`s with a fixed code and a severity (`CRITICAL`, `WARNING`, `INFO`), so the verdict policy and the evaluation work on codes rather than free text.
 
-_The agent wiring and the external MCP server are added in the next milestones._
+_The external MCP server that reads artwork and writes reports is added in the next milestone._
 
 ## Sample artwork
 
@@ -67,7 +86,15 @@ _TODO_
 
 ## Running the tests and evaluations
 
-_TODO_
+```bash
+npm ci
+npm run check                                  # lint, typecheck and all tests (offline, no AWS)
+npm run review -w @prepress/api -- flyer-nike  # one live review against Bedrock (needs AWS credentials in .env)
+```
+
+The agent tests use a scripted model that plays back each agent's steps, so delegation, tool use, guardrails and failure handling are tested offline, for free and deterministically.
+
+_The evaluation is added in a later milestone._
 
 ## Evaluation approach
 
