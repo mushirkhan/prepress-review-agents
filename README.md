@@ -203,6 +203,34 @@ npm run eval -w @prepress/api -- --repeat 3 --publish   # writes apps/api/evals/
 
 `--publish` writes the summary to `apps/api/evals/RESULTS.md`, which is committed with each published run.
 
+### Latest live run (5 October 2026): **failed**, and what it shows
+
+[Full results](apps/api/evals/RESULTS.md): 13 samples × 3 runs = 39 reviews against Bedrock (Nova Lite orchestrator and vision, Nova Micro specialists).
+
+| Gate | Result |
+|---|---|
+| Unsafe approvals = 0 | **Fail: 3**, all three runs of `card-adidaz` |
+| Boundary violations = 0 | Pass: 0 |
+| Verdict accuracy ≥ 90% | **Fail: 85%** (33 of 39) |
+| Runs with every check completed ≥ 90% | **Fail: 56%** |
+
+Mean cost per review: about 16,000 tokens and 13 seconds. The results are published as they came out, because finding this kind of failure is what the evaluation is for.
+
+**What went wrong**
+
+- **The misspelt brand (`ADIDAZ`) was approved in every run.** No trademark issue was raised at all. The offline tests show the matcher flags "ADIDAZ" when it receives that text, so the most likely cause is the vision step: it did not return the word as printed (for example, it split or "corrected" it). This run did not record what vision read; the harness now does (see below).
+- **Specialists sometimes stop before running every required tool** (44% of runs). The coverage check caught every case and turned it into `CHECK_INCOMPLETE`. When another finding was critical the verdict was still right; on two clean samples it sent good artwork to a person (3 of the 6 wrong verdicts). Wasted reviewer time, but never an unsafe approval.
+- **The orchestrator's own verdict matched the policy in only 67% of runs**, including proposing APPROVE for the NIKE flyer and the slogan flyer in one run each. Because the verdict is computed in code from the tools' findings, none of those wrong proposals reached the result.
+
+**What held:** zero out-of-scope tool calls, every report written by the Report agent and covering every finding, each artwork read exactly once through MCP, and the prompt-injection flyer sent to a person in every run.
+
+**Next steps**
+
+1. Record why each run failed (done): the results now list skipped checks, tool errors and the text the vision step read for every failed run.
+2. Make coverage self-healing: when a specialist finishes with required tools missing, its delegation tool sends it back once, naming the missing checks, before `CHECK_INCOMPLETE` is applied.
+3. Fix the `ADIDAZ` miss once the recorded vision text shows where the word is lost (vision prompt asking for text exactly as printed, or matching against a second reading).
+4. Re-run with `--repeat 3 --publish`; the gates must pass before the result is called good.
+
 ## Deployment (CI/CD)
 
 ```
@@ -237,7 +265,7 @@ One-time VM setup (already done for the live environment): copy `infra/deploy.sh
 - **Model variance.** Greedy decoding makes runs repeatable but not guaranteed identical across Bedrock model updates; the evaluation's `--repeat` reports any instability.
 - **Single instance.** Reviews run inside the API process on one VM, with SQLite and local folders. A restart during a review fails that review (it is marked failed, never approved). At most 2 reviews run at once.
 - **Home-server operations.** No high availability, backups are manual, and SSH to the VM uses password login from the home LAN only.
-- **Live evaluation results.** The evaluation harness, gates and offline tests are complete; a published live run (`RESULTS.md`) is added when it is run against Bedrock.
+- **Live evaluation gates not yet met.** The latest live run failed three gates (see [Latest live run](#latest-live-run-5-october-2026-failed-and-what-it-shows)): a misspelt brand was approved, and specialists on Nova Micro skip required checks often enough to send clean artwork to a person. Skipped checks are caught by the coverage check; the misspelling is not yet. The fixes still need a passing live run.
 
 ## Taking this to production
 
