@@ -257,38 +257,66 @@ One-time VM setup (already done for the live environment): copy `infra/deploy.sh
 - A brand on the artwork without a matching licence on the ticket is not OK to produce. Ambiguous everyday words that are also brands ("apple") go to a human rather than being rejected.
 - Missing a problem is worse than asking a human, so the system leans towards `NEEDS_HUMAN_REVIEW` when unsure or when anything fails.
 
-**Limitations**
+**Current limitations**
 
-- **Synthetic samples.** The 13 samples use clean fonts and flat colours. Real artwork (photos, small or rotated text, real logos) is harder for the vision step, and the evaluation does not yet measure that.
-- **Small trademark registry.** A handful of brands, slogans and logo descriptions, enough to show the behaviour. It is not legal clearance.
-- **Raster checks only.** No PDF, vector, font, ink coverage or spot colour checks; bleed is inferred from pixel dimensions.
-- **Model variance.** Greedy decoding makes runs repeatable but not guaranteed identical across Bedrock model updates; the evaluation's `--repeat` reports any instability.
-- **Single instance.** Reviews run inside the API process on one VM, with SQLite and local folders. A restart during a review fails that review (it is marked failed, never approved). At most 2 reviews run at once.
-- **Home-server operations.** No high availability, backups are manual, and SSH to the VM uses password login from the home LAN only.
-- **Live evaluation gates not yet met.** The latest live run failed three gates (see [Latest live run](#latest-live-run-5-october-2026-failed-and-what-it-shows)): a misspelt brand was approved, and specialists on Nova Micro skip required checks often enough to send clean artwork to a person. Skipped checks are caught by the coverage check; the misspelling is not yet. The fixes still need a passing live run.
+*Review quality (from the [latest live run](#latest-live-run-5-october-2026-failed-and-what-it-shows))*
+
+- **The live evaluation gates are not met yet.** Verdict accuracy was 85% (target 90%) and only 56% of runs completed every required check (target 90%).
+- **A misspelt brand got through.** `ADIDAZ` was approved in all three runs, most likely because the vision step did not return the word as printed. Until this is fixed, disguised brand names can be missed.
+- **Specialists skip checks.** Nova Micro stops before running every required tool in about 4 of 10 runs. The coverage check catches every case, so this never produces an unsafe approval, but it sends clean artwork to a person.
+- **The orchestrator's own judgement is weak.** Its proposed verdict matched the policy in 67% of runs. It does not affect the result (code decides), but it shows how far the cheapest models can be trusted.
+
+*What is checked*
+
+- **Raster checks only.** No PDF, vector, font, ink coverage, overprint or spot colour checks; bleed is inferred from pixel dimensions.
+- **Small trademark registry.** A handful of brands, slogans and logo descriptions, enough to show the behaviour. It is not legal clearance, and licences are a free-text reference on the ticket, not verified against licence records.
+- **Synthetic samples.** The 13 samples use clean fonts and flat colours. Real artwork (photos, small or rotated text, real logos) is harder for the vision step, and neither the tests nor the evaluation measure that yet.
+- **Model variance.** Greedy decoding makes runs more repeatable, but two samples still changed verdict between runs, and a Bedrock model update can change behaviour without a code change.
+
+*Users and data*
+
+- **Fixed allowance.** Every user gets 5 reviews per UTC day; there are no per-customer plans, overrides or admin screen. Access is managed by adding people to the `prepress-reviewers` group in the Cognito console.
+- **No reviewer workflow.** A `NEEDS_HUMAN_REVIEW` verdict is only a label: there is no queue, assignment, override or sign-off, so reviewer decisions are not captured or fed back into the evaluation.
+- **No retention or deletion.** Uploads, reports and traces are kept indefinitely, and users cannot delete their jobs.
+- **Single-user tenancy.** Jobs are isolated per user, not per organisation, so colleagues cannot share reviews.
+
+*Platform*
+
+- **Single instance.** Reviews run inside the API process on one VM, with SQLite and local folders, at most 2 at a time. A restart fails any review in progress (marked failed, never approved).
+- **Home-server operations.** No high availability, manual backups, long-lived IAM access keys in an `.env` file, and SSH to the VM with password login from the home LAN only.
+- **Limited monitoring.** The trace explains each review, but there are no metrics, dashboards or alerts for errors, latency, cost or Bedrock throttling.
+- **Evaluation is manual.** The live evaluation is a manual pipeline job, so a prompt or model change can be deployed without passing it.
 
 ## Taking this to production
 
-The live deployment is a working demo on one home server. For real customers I would change the following, roughly in this order.
+The live deployment is a working demo on one home server. For real customers I would do the following, in this order: first make the reviews trustworthy, then make the platform reliable, then operate it safely.
 
-**Reliability and scale**
+**1. Make the evaluation pass, and keep it passing**
 
-- **Queue and workers.** Today reviews run inside the API process, so a restart loses in-flight reviews. Put jobs on a queue (SQS) and run agents in separate worker processes or containers that scale with queue depth, with retries and a dead-letter queue. The API then only accepts uploads and serves results.
-- **Managed storage.** Move artwork and reports to S3 (encrypted, lifecycle rules for retention) and jobs plus traces to Postgres (RDS). The MCP boundary stays: either the filesystem MCP server over a mounted volume, or an S3-backed MCP server with the same read-only/write-only split, enforced again by IAM policies per role.
-- **Hosting.** Run the containers on ECS Fargate or EKS across two availability zones behind an ALB, with WAF in front; replace the home VM, the tunnel and SSH deploys with image deploys through the cloud provider (blue/green or canary, automatic rollback on health checks).
-- **Bedrock limits.** Request quota increases, use cross-region inference profiles, add a circuit breaker and a per-customer budget, and keep the fail-closed behaviour when the model is unavailable.
+- **Self-healing coverage.** When a specialist finishes with required tools missing, its delegation tool sends it back once, naming the missing checks, before `CHECK_INCOMPLETE` is applied. Deterministic checks that need no judgement (DPI, bleed, colour space, barcode) could also run unconditionally, with the agent only interpreting them.
+- **Fix disguised brands.** Use the per-run diagnostics (now recorded) to see what vision read for `ADIDAZ`; then ask for text exactly as printed, read the image twice and match both readings, or move vision to a stronger model while keeping the cheap models for the rest.
+- **Pick models by measurement.** Rerun the evaluation for Nova Lite or Pro as specialists and compare accuracy, coverage and cost per review; spend more only where the evaluation shows it pays.
+- **Evaluation as a release gate.** Run the evaluation automatically on every prompt, model or code change, block the deploy if a gate fails, and pin model versions so behaviour only changes on purpose.
+- **A realistic golden set.** Grow it from real, anonymised jobs: photos, small and rotated text, real logos, every reviewer override, and red-team prompt-injection cases.
 
-**Quality of the reviews**
+**2. Product features**
 
-- **Real artwork.** Accept PDF/X and larger files (presigned S3 uploads), extract text, fonts, images and colour data from the PDF itself, and add checks that matter on press: total ink coverage, spot colours, overprint, font embedding, minimum line weights and text size.
-- **Trademarks.** Replace the fixed registry with a maintained trademark source and a logo detection model, with licence records per customer so a licensed brand is approved for that customer only.
-- **Evaluation as a release gate.** Grow the golden set from real, anonymised jobs, including every reviewer override; run the evaluation on every prompt, model or code change before deploy, and track accuracy and unsafe approvals over time. Add a production feedback loop: reviewers confirm or overturn verdicts, and disagreements become new test cases.
-- **Human in the loop.** A review queue for `NEEDS_HUMAN_REVIEW` with assignment, comments and an audit of who approved what.
+- **Reviewer workflow.** A queue for `NEEDS_HUMAN_REVIEW` with assignment, comments, override and sign-off, and an audit trail of who approved what. Overrides become new evaluation cases.
+- **Real artwork.** Accept PDF/X and larger files (presigned S3 uploads), extract text, fonts, images and colour data from the PDF itself, and add press checks: total ink coverage, spot colours, overprint, font embedding, minimum line weights and text size.
+- **Trademarks and licences.** A maintained trademark source and a logo detection model, with licence records per customer, so a licensed brand is approved for that customer only.
+- **Organisations and plans.** Per-organisation tenancy, roles (submitter, reviewer, admin), and allowances per plan instead of one fixed daily limit, with an admin screen to manage them.
 
-**Security and operations**
+**3. Reliability and scale**
 
-- **Secrets and identity.** IAM roles instead of access keys, secrets in Secrets Manager, least-privilege policies per service, and Cognito with MFA and per-customer tenancy (jobs partitioned by organisation, not only by user).
-- **Uploads.** Malware scanning, strict decoding limits (pixel count, decompression bombs) and storage of the original file separately from anything the models see.
-- **Prompt injection.** Keep the current layers (text on the artwork is data, tools have no write access, the verdict is code) and add red-team cases to the evaluation set.
-- **Observability.** Export the trace as OpenTelemetry spans (one span per agent, tool and MCP call) to a tracing backend; dashboards and alerts for latency, error rate, token cost per review, guardrail blocks and verdict mix; structured logs with job ids, without customer content.
-- **Compliance.** Data retention and deletion per customer, region pinning for artwork, and a documented model and data-processing inventory.
+- **Queue and workers.** Put jobs on a queue (SQS) and run agents in separate worker containers that scale with queue depth, with retries and a dead-letter queue. The API then only accepts uploads and serves results, and a deploy no longer fails reviews in progress.
+- **Managed storage.** Artwork and reports in S3 (encrypted, lifecycle rules for retention); jobs and traces in Postgres (RDS) with automated backups. The MCP boundary stays: the filesystem MCP server over a mounted volume, or an S3-backed MCP server with the same read-only/write-only split, enforced again by IAM policies per role.
+- **Hosting.** Containers on ECS Fargate or EKS across two availability zones behind an ALB with WAF; image deploys with blue/green or canary releases and automatic rollback, replacing the home VM, tunnel and SSH deploys.
+- **Bedrock limits and cost.** Quota increases, cross-region inference profiles, a circuit breaker, prompt caching, and a token budget per review and per customer. Keep failing closed when a model is unavailable.
+
+**4. Security and operations**
+
+- **Secrets and identity.** IAM roles instead of access keys, secrets in Secrets Manager, least-privilege policies per service, and MFA in Cognito.
+- **Uploads.** Malware scanning, strict decoding limits (pixel count, decompression bombs), and the original file stored separately from anything the models see.
+- **Prompt injection.** Keep the current layers (text on the artwork is data, tools have no write access, the verdict is code) and test them with the red-team cases above.
+- **Observability.** Export the trace as OpenTelemetry spans (one per agent, tool and MCP call); dashboards and alerts for latency, error rate, token cost per review, guardrail blocks, `CHECK_INCOMPLETE` rate and verdict mix; structured logs with job ids, without customer content.
+- **Data protection.** Retention and deletion per customer (including user-initiated deletion), region pinning for artwork, and a documented inventory of models and data processing.
