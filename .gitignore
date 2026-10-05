@@ -21,7 +21,7 @@ data/
 *.sqlite3
 
 # Eval run output (summaries are committed under evals/reports when useful)
-evals/results/
+apps/api/evals/results/
 
 # OS / editor
 .DS_Store
