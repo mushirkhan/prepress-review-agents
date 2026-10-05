@@ -43,7 +43,7 @@ export async function runEval(samples: EvalSample[], deps: HarnessDeps, opts: Ha
     });
     const result = await reviewArtwork(job, deps.models(sample));
     const report = await readFile(join(deps.dataDir, 'reports', `${jobId}.md`), 'utf8').catch(() => undefined);
-    const score = scoreCase(sample, run, result, report);
+    const score = scoreCase(sample, run, result, report, job.state.vision?.texts);
     scores.push(score);
     opts.onCase?.(score);
   };

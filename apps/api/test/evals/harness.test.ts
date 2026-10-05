@@ -81,9 +81,19 @@ describe('evaluation harness', () => {
 
   it('fails the coverage gate when an agent skips its checks', async () => {
     const lazy: ScriptStep[] = [{ toolCalls: [{ toolName: 'read_image_metadata' }] }, { text: 'Looks fine.' }];
-    const summary = summarize(await runEval(samples, harness({ preflight: lazy }), { repeat: 1, concurrency: 2 }));
+    const scores = await runEval(samples, harness({ preflight: lazy }), { repeat: 1, concurrency: 2 });
+    const summary = summarize(scores);
     expect(summary.passRates.coverage).toBe(0);
     expect(summary.gates.find((g) => g.name.startsWith('Checks completed'))!.passed).toBe(false);
+
+    // The results say which checks were skipped and what the agent did instead.
+    const card = scores.find((s) => s.id === 'business-card-clean')!;
+    expect(card.diagnostics.missingTools).toEqual(['check_image_dpi', 'check_bleed', 'check_color_space']);
+    expect(card.diagnostics.toolsCalled['preflight-agent']).toEqual(['read_image_metadata']);
+    expect(card.diagnostics.visionTexts).toEqual(samples.find((s) => s.id === 'business-card-clean')!.printedText);
+    const md = toMarkdown(summary, scores, { date: 'today', models: 'scripted' });
+    expect(md).toContain('## Diagnostics for failed runs');
+    expect(md).toContain('| business-card-clean | 1 | check_image_dpi, check_bleed, check_color_space |');
   }, 60_000);
 });
 
@@ -99,6 +109,7 @@ describe('summarize', () => {
     tokens: 1000,
     durationMs: 1000,
     violations: 0,
+    diagnostics: { missingTools: [], toolsCalled: {}, toolErrors: [] },
   });
 
   it('flags samples whose verdict changed between repeated runs', () => {

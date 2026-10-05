@@ -62,9 +62,35 @@ export interface CaseScore {
   durationMs: number;
   violations: number;
   error?: string | undefined;
+  /** What happened inside the run, to explain a failed check without rerunning it. */
+  diagnostics: Diagnostics;
 }
 
-export function scoreCase(sample: EvalSample, run: number, result: ReviewResult, report: string | undefined): CaseScore {
+export interface Diagnostics {
+  /** Required tools that did not complete, from CHECK_INCOMPLETE. */
+  missingTools: string[];
+  /** Tools each specialist called, in order. */
+  toolsCalled: Record<string, string[]>;
+  /** Tool errors as "tool: message". */
+  toolErrors: string[];
+  /** Text the vision step read on the artwork. */
+  visionTexts?: string[] | undefined;
+}
+
+function diagnose(result: ReviewResult, visionTexts: string[] | undefined): Diagnostics {
+  const toolsCalled: Record<string, string[]> = {};
+  const toolErrors: string[] = [];
+  for (const e of result.trace) {
+    if (e.type === 'tool.called') (toolsCalled[e.agent] ??= []).push(String(e.data.tool));
+    if (e.type === 'tool.error') toolErrors.push(`${String(e.data.tool)}: ${String(e.data.error)}`);
+  }
+  const missingTools = result.issues
+    .filter((i) => i.code === 'CHECK_INCOMPLETE')
+    .flatMap((i) => (Array.isArray(i.data?.missing) ? (i.data.missing as string[]) : []));
+  return { missingTools, toolsCalled, toolErrors, visionTexts };
+}
+
+export function scoreCase(sample: EvalSample, run: number, result: ReviewResult, report: string | undefined, visionTexts?: string[]): CaseScore {
   const expectedCodes = [...new Set(sample.expected.issueCodes ?? [])].sort();
   const codes = [...new Set(result.issues.map((i) => i.code))].sort();
   const t = result.trace;
@@ -110,6 +136,7 @@ export function scoreCase(sample: EvalSample, run: number, result: ReviewResult,
     durationMs: result.durationMs,
     violations: result.violations.length,
     error: result.error,
+    diagnostics: diagnose(result, visionTexts),
   };
 }
 
@@ -239,6 +266,26 @@ export function toMarkdown(summary: EvalSummary, scores: CaseScore[], meta: { da
       return `| ${s.id} | ${s.run} | ${s.expectedVerdict} | ${s.verdict} | ${s.proposedVerdict ?? '—'} | ${s.codes.join(', ') || '—'} | ${failed.join(', ') || '—'} |`;
     }),
     '',
+    ...diagnosticsSection(scores, names),
   ];
   return lines.join('\n');
+}
+
+/** For every run that failed a check: what was missing, what failed and what the vision step read. */
+function diagnosticsSection(scores: CaseScore[], names: CheckName[]): string[] {
+  const failing = scores.filter((s) => names.some((n) => n !== 'orchestratorAgrees' && !s.checks[n]));
+  if (!failing.length) return [];
+  const cell = (x: string) => x.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  return [
+    '## Diagnostics for failed runs',
+    '',
+    '| Sample | Run | Missing checks | Tool errors | Text read by vision |',
+    '|---|---|---|---|---|',
+    ...failing.map((s) => {
+      const d = s.diagnostics;
+      const text = d.visionTexts ? d.visionTexts.map((t) => `"${t}"`).join(', ') || '(none)' : '—';
+      return `| ${s.id} | ${s.run} | ${d.missingTools.join(', ') || '—'} | ${cell(d.toolErrors.join('; ')) || '—'} | ${cell(text)} |`;
+    }),
+    '',
+  ];
 }
