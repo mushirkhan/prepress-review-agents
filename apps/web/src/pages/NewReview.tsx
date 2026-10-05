@@ -4,7 +4,8 @@ import { config } from '../config';
 import { ApiError } from '../lib/api';
 import { navigate } from '../lib/router';
 import { useSession } from '../lib/session';
-import type { Sample, Ticket } from '../types';
+import { describeUsage } from '../lib/usage';
+import type { Sample, Ticket, Usage } from '../types';
 
 const PRESETS = [
   { id: 'card', label: 'Business card', w: 85, h: 55 },
@@ -55,9 +56,15 @@ export function NewReview() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [usage, setUsage] = useState<Usage | null>(null);
+
+  const refreshUsage = () => {
+    api.usage().then(setUsage).catch(() => setUsage(null));
+  };
 
   useEffect(() => {
     api.samples().then(setSamples).catch(() => setSamples([]));
+    api.usage().then(setUsage).catch(() => setUsage(null));
   }, [api]);
 
   useEffect(() => {
@@ -102,12 +109,18 @@ export function NewReview() {
       const job = await api.createJob(file, toTicket(form));
       navigate(`/jobs/${job.id}`);
     } catch (err) {
-      setError(err instanceof ApiError ? `${err.message} (${err.status} ${err.code})` : String(err));
+      if (err instanceof ApiError && err.code === 'DAILY_LIMIT_REACHED') {
+        setError(null); // the allowance notice below explains it
+        refreshUsage();
+      } else {
+        setError(err instanceof ApiError ? `${err.message} (${err.status} ${err.code})` : String(err));
+      }
       setBusy(false);
     }
   };
 
   const tooBig = file && file.size > config.maxUploadBytes;
+  const allowance = usage ? describeUsage(usage) : null;
 
   return (
     <div className="page">
@@ -210,7 +223,12 @@ export function NewReview() {
               {error}
             </p>
           ) : null}
-          <button className="primary" type="submit" disabled={busy}>
+          {allowance ? (
+            <p className={allowance.exhausted ? 'allowance allowance-out' : 'allowance'} role={allowance.exhausted ? 'alert' : 'status'}>
+              {allowance.text}
+            </p>
+          ) : null}
+          <button className="primary" type="submit" disabled={busy || Boolean(allowance?.exhausted)}>
             {busy ? 'Uploading…' : 'Start review'}
           </button>
         </form>

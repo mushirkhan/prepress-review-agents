@@ -20,7 +20,7 @@ const config = loadConfig({
   COGNITO_REGION: TEST_POOL.region,
   COGNITO_USER_POOL_ID: TEST_POOL.userPoolId,
   COGNITO_CLIENT_ID: TEST_POOL.clientId,
-  RATE_LIMIT_PER_10_MIN: '3',
+  DAILY_REVIEW_LIMIT: '3',
 });
 
 let repo: JobRepository;
@@ -29,9 +29,11 @@ let app: ReturnType<typeof createApp>;
 let vision: FakeVision;
 let artwork: Map<string, Buffer>;
 let store: MemoryStore;
+let clock: Date;
 
 beforeEach(() => {
   repo = new JobRepository(':memory:');
+  clock = new Date('2026-10-05T21:00:00Z');
   artwork = new Map();
   store = new MemoryStore(artwork);
   vision = new FakeVision({ texts: [], logos: [] });
@@ -45,7 +47,8 @@ beforeEach(() => {
         specialist: specialistModel({ preflight: SCRIPTS.preflight(), ip: SCRIPTS.ip(), report: SCRIPTS.report() }).model,
       }),
     maxConcurrent: 2,
-    rateLimitPer10Min: config.RATE_LIMIT_PER_10_MIN,
+    dailyLimit: config.DAILY_REVIEW_LIMIT,
+    now: () => clock,
   });
   app = createApp({
     config,
@@ -149,13 +152,44 @@ describe('POST /jobs', () => {
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('INVALID_TICKET');
   });
 
-  it('rate-limits each user', async () => {
+  it('allows each user a fixed number of reviews per UTC day', async () => {
+    const usage = async (token?: string) => (await app.request('/usage', { headers: auth(token) })).json();
+    expect(await usage()).toEqual({ limit: 3, used: 0, remaining: 3, resetsAt: '2026-10-06T00:00:00.000Z' });
+
     for (let i = 0; i < 3; i++) expect((await upload('business-card-clean')).status).toBe(202);
+    expect(await usage()).toMatchObject({ used: 3, remaining: 0 });
+
     const res = await upload('business-card-clean');
     expect(res.status).toBe(429);
-    expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect(res.headers.get('retry-after')).toBe(String(3 * 60 * 60)); // until midnight UTC
+    const body = (await res.json()) as { error: { code: string; message: string; details: { remaining: number } } };
+    expect(body.error.code).toBe('DAILY_LIMIT_REACHED');
+    expect(body.error.message).toContain('3 reviews for today');
+    expect(body.error.details.remaining).toBe(0);
+
     // Another user is not affected.
     expect((await upload('business-card-clean', { token: signToken({ sub: 'user-b' }) })).status).toBe(202);
+
+    // The allowance resets at midnight UTC.
+    await jobs.whenIdle();
+    clock = new Date('2026-10-06T00:00:01Z');
+    expect(await usage()).toMatchObject({ used: 0, remaining: 3, resetsAt: '2026-10-07T00:00:00.000Z' });
+    expect((await upload('business-card-clean')).status).toBe(202);
+  });
+
+  it('does not count refused uploads against the allowance', async () => {
+    const empty = new FormData();
+    empty.append('file', new File([], 'empty.png', { type: 'image/png' }));
+    empty.append('ticket', JSON.stringify(samples.get('business-card-clean')!.ticket));
+    for (let i = 0; i < 4; i++) {
+      expect((await app.request('/jobs', { method: 'POST', headers: auth(), body: empty })).status).toBe(400);
+    }
+    expect(((await (await app.request('/usage', { headers: auth() })).json()) as { used: number }).used).toBe(0);
+  });
+
+  it('does not let parallel uploads exceed the allowance', async () => {
+    const results = await Promise.all(Array.from({ length: 5 }, () => upload('business-card-clean')));
+    expect(results.map((r) => r.status).sort()).toEqual([202, 202, 202, 429, 429]);
   });
 });
 

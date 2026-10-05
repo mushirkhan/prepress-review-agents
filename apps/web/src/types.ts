@@ -55,3 +55,11 @@ export interface Sample {
   ticket: Partial<Ticket> & { jobName: string; trimWidthMm: number; trimHeightMm: number };
   expected: { verdict?: Verdict; issueCodes?: string[]; httpStatus?: number; error?: string };
 }
+
+/** The signed-in user's review allowance for the current UTC day. */
+export interface Usage {
+  limit: number;
+  used: number;
+  remaining: number;
+  resetsAt: string;
+}

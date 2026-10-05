@@ -1,5 +1,5 @@
 import { config } from '../config';
-import type { Job, Sample, Ticket } from '../types';
+import type { Job, Sample, Ticket, Usage } from '../types';
 
 export class ApiError extends Error {
   constructor(
@@ -29,6 +29,7 @@ export function createApi(getToken: TokenGetter) {
   };
 
   return {
+    usage: async () => (await (await request('/usage')).json()) as Usage,
     listJobs: async () => ((await (await request('/jobs')).json()) as { jobs: Job[] }).jobs,
     getJob: async (id: string) => (await (await request(`/jobs/${id}`)).json()) as Job,
     createJob: async (file: File, ticket: Ticket) => {

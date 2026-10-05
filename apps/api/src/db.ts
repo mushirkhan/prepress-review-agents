@@ -81,12 +81,11 @@ export class JobRepository {
     `);
   }
 
-  create(job: Pick<JobRecord, 'id' | 'owner' | 'fileName' | 'bytes' | 'ticket'>): JobRecord {
-    const createdAt = new Date().toISOString();
+  create(job: Pick<JobRecord, 'id' | 'owner' | 'fileName' | 'bytes' | 'ticket'>, createdAt = new Date().toISOString()): JobRecord {
     this.db
       .prepare('INSERT INTO jobs (id, owner, created_at, status, file_name, bytes, ticket_json) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(job.id, job.owner, createdAt, 'queued', job.fileName, job.bytes, JSON.stringify(job.ticket));
-    return { ...job, createdAt, status: 'queued' };
+    return { id: job.id, owner: job.owner, fileName: job.fileName, bytes: job.bytes, ticket: job.ticket, createdAt, status: 'queued' };
   }
 
   setStatus(id: string, status: JobStatus): void {
@@ -111,6 +110,12 @@ export class JobRepository {
 
   listForOwner(owner: string, limit = 50): JobRecord[] {
     return (this.db.prepare('SELECT * FROM jobs WHERE owner = ? ORDER BY created_at DESC LIMIT ?').all(owner, limit) as unknown as JobRow[]).map(toRecord);
+  }
+
+  /** Jobs the owner created at or after `sinceIso` (ISO timestamps sort as text). */
+  countCreatedSince(owner: string, sinceIso: string): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM jobs WHERE owner = ? AND created_at >= ?').get(owner, sinceIso) as { n: number };
+    return Number(row.n);
   }
 
   addEvent(jobId: string, e: TraceEvent): void {

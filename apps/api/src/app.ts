@@ -11,7 +11,7 @@ import { AuthError, type Authenticator, type User } from './auth.js';
 import type { AppConfig } from './config.js';
 import type { JobRecord, JobRepository } from './db.js';
 import { JobTicketSchema } from './domain/ticket.js';
-import { type JobService, RateLimitError } from './jobs.js';
+import { DailyLimitError, type JobService } from './jobs.js';
 import { UploadError, validateUpload } from './uploads.js';
 
 export const APP_VERSION = process.env.APP_VERSION ?? 'dev';
@@ -113,14 +113,16 @@ export function createApp(deps?: AppDeps): Hono<Env> {
         return c.json(publicJob(job), 202);
       } catch (e) {
         if (e instanceof UploadError) return err(c, e.status, e.code, e.message);
-        if (e instanceof RateLimitError) {
+        if (e instanceof DailyLimitError) {
           c.header('Retry-After', String(e.retryAfterSeconds));
-          return err(c, 429, 'RATE_LIMITED', e.message);
+          return err(c, 429, 'DAILY_LIMIT_REACHED', e.message, e.usage);
         }
         throw e;
       }
     },
   );
+
+  app.get('/usage', (c) => c.json(deps.jobs.usage(c.get('user').sub)));
 
   app.get('/jobs', (c) => c.json({ jobs: deps.repo.listForOwner(c.get('user').sub).map(publicJob) }));
 

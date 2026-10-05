@@ -14,27 +14,45 @@ export interface JobServiceDeps {
   /** Runs one review (reviewArtwork with the configured models). */
   review: (job: JobContext) => Promise<ReviewResult>;
   maxConcurrent: number;
-  rateLimitPer10Min: number;
+  /** Reviews each user may start per calendar day (UTC). */
+  dailyLimit: number;
+  /** Clock, replaceable in tests. */
+  now?: () => Date;
 }
 
-export class RateLimitError extends Error {
-  constructor(readonly retryAfterSeconds: number) {
-    super(`Too many reviews started. Try again in ${retryAfterSeconds} seconds.`);
+/** A user's review allowance for the current UTC day. */
+export interface Usage {
+  limit: number;
+  used: number;
+  remaining: number;
+  /** When the allowance resets: the next midnight UTC, as an ISO timestamp. */
+  resetsAt: string;
+}
+
+export class DailyLimitError extends Error {
+  constructor(
+    readonly usage: Usage,
+    readonly retryAfterSeconds: number,
+  ) {
+    super(`You have used all ${usage.limit} reviews for today. You can start new reviews after midnight UTC.`);
   }
 }
+
+const startOfUtcDay = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 
 type Listener = (e: TraceEvent) => void;
 
 /**
  * Accepts jobs and runs reviews in the background: limited concurrency (each
- * review makes several model calls), a per-user rate limit, every trace event
+ * review makes several model calls), a per-user daily allowance, every trace event
  * persisted as it happens, and live subscribers for the event stream.
  */
 export class JobService {
   private readonly queue: string[] = [];
   private running = 0;
   private readonly live = new Map<string, Set<Listener>>();
-  private readonly starts = new Map<string, number[]>();
+  /** Submissions accepted but not yet saved, so two parallel uploads cannot both take the last review. */
+  private readonly reserved = new Map<string, number>();
   private readonly idle = new Set<() => void>();
 
   constructor(private readonly deps: JobServiceDeps) {
@@ -43,10 +61,22 @@ export class JobService {
   }
 
   async submit(owner: string, file: { name: string; buffer: Buffer }, ticket: JobTicket): Promise<JobRecord> {
-    this.checkRateLimit(owner);
+    const usage = this.usage(owner);
+    if (usage.remaining <= 0) {
+      const seconds = Math.max(1, Math.ceil((Date.parse(usage.resetsAt) - this.now().getTime()) / 1000));
+      throw new DailyLimitError(usage, seconds);
+    }
+    this.reserved.set(owner, (this.reserved.get(owner) ?? 0) + 1);
     const id = randomUUID();
-    await this.deps.saveArtwork(id, file.buffer);
-    const record = this.deps.repo.create({ id, owner, fileName: file.name.slice(0, 200), bytes: file.buffer.length, ticket });
+    let record: JobRecord;
+    try {
+      await this.deps.saveArtwork(id, file.buffer);
+      record = this.deps.repo.create({ id, owner, fileName: file.name.slice(0, 200), bytes: file.buffer.length, ticket }, this.now().toISOString());
+    } finally {
+      const left = (this.reserved.get(owner) ?? 1) - 1;
+      if (left > 0) this.reserved.set(owner, left);
+      else this.reserved.delete(owner);
+    }
     this.live.set(id, new Set()); // queued jobs can already be watched
     this.queue.push(id);
     this.pump();
@@ -72,15 +102,24 @@ export class JobService {
     return new Promise((resolve) => this.idle.add(resolve));
   }
 
-  private checkRateLimit(owner: string): void {
-    const now = Date.now();
-    const windowMs = 10 * 60 * 1000;
-    const recent = (this.starts.get(owner) ?? []).filter((t) => now - t < windowMs);
-    if (recent.length >= this.deps.rateLimitPer10Min) {
-      throw new RateLimitError(Math.ceil((recent[0]! + windowMs - now) / 1000));
-    }
-    recent.push(now);
-    this.starts.set(owner, recent);
+  /**
+   * The user's allowance today. Counted from the job table, so it survives
+   * restarts; every accepted review counts, whatever its outcome.
+   */
+  usage(owner: string): Usage {
+    const dayStart = startOfUtcDay(this.now());
+    const used = this.deps.repo.countCreatedSince(owner, dayStart.toISOString()) + (this.reserved.get(owner) ?? 0);
+    const limit = this.deps.dailyLimit;
+    return {
+      limit,
+      used: Math.min(used, limit),
+      remaining: Math.max(0, limit - used),
+      resetsAt: new Date(dayStart.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+    };
+  }
+
+  private now(): Date {
+    return this.deps.now?.() ?? new Date();
   }
 
   private pump(): void {

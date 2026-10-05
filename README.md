@@ -160,6 +160,7 @@ All endpoints except `/healthz` need a Cognito access token issued to the `prepr
 | Method and path | What it does |
 |---|---|
 | `POST /jobs` | Upload artwork (`file`, 200 KB or less) and a JSON job ticket (`ticket`). Returns `202` with the job id; the review runs in the background. Invalid uploads are refused before any model runs: `400` empty, `413` too large, `415` not a JPEG/PNG/TIFF by content, `422` undecodable. |
+| `GET /usage` | Your review allowance today: `limit`, `used`, `remaining`, `resetsAt` |
 | `GET /jobs` | Your jobs, newest first |
 | `GET /jobs/:id` | Status, verdict, issues per agent, agent summaries, boundary violations, token usage |
 | `GET /jobs/:id/events` | **Live trace** (Server-Sent Events): every delegation, tool call, MCP call and guardrail decision as it happens; replays finished runs; resumes with `Last-Event-ID` |
@@ -167,7 +168,7 @@ All endpoints except `/healthz` need a Cognito access token issued to the `prepr
 | `GET /jobs/:id/artwork` | A browser-friendly preview of the upload |
 | `GET /samples`, `GET /samples/:id/file` | The sample set, for trying the app |
 
-Each user can start 10 reviews per 10 minutes, and at most 2 reviews run at once. Another user's job always returns `404`.
+Each user can start **5 reviews per day** (the allowance resets at midnight UTC; refused uploads do not count), and at most 2 reviews run at once. Over the allowance, `POST /jobs` returns `429 DAILY_LIMIT_REACHED` with a `Retry-After` header, and the web app shows how many reviews are left and disables **Start review** when none are. Another user's job always returns `404`.
 
 ### Web app
 

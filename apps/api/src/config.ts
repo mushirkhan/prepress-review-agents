@@ -27,8 +27,8 @@ const EnvSchema = z.object({
   COGNITO_CLIENT_ID: z.string().optional(),
   COGNITO_REQUIRED_GROUP: z.string().default('prepress-reviewers'),
   CORS_ORIGINS: z.string().default('https://prepress.gemsofy.com,http://localhost:5173'),
-  /** Reviews each user may start per 10 minutes (each costs model calls). */
-  RATE_LIMIT_PER_10_MIN: z.coerce.number().int().positive().default(10),
+  /** Reviews each user may start per calendar day (UTC); each review costs model calls. */
+  DAILY_REVIEW_LIMIT: z.coerce.number().int().positive().default(5),
   MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(2),
   SAMPLES_DIR: z.string().optional(),
 });

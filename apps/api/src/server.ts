@@ -31,7 +31,7 @@ const jobs = new JobService({
   reviewDeps: () => ({ store: mcpStore, vision, embedder }),
   review: (job) => reviewArtwork(job, models),
   maxConcurrent: config.MAX_CONCURRENT_JOBS,
-  rateLimitPer10Min: config.RATE_LIMIT_PER_10_MIN,
+  dailyLimit: config.DAILY_REVIEW_LIMIT,
 });
 
 const defaultSamples = resolve(dirname(fileURLToPath(import.meta.url)), '../../../samples');
