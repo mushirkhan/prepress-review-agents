@@ -241,7 +241,7 @@ push to main ──► GitLab: check ──► build_images ──► deploy ─
 ```
 
 - The pipeline runs on a self-hosted GitLab group runner (Docker executor) on the author's Proxmox server.
-- `build_images` pushes the `api`, `web` and `mcp-filesystem` images to `registry.gitlab.com/genai-rag/prepress-review-agents/<image>:<short-sha>`.
+- `build_images` pushes the `api`, `web` and `mcp-filesystem` images to `registry.gitlab.com/mak-projects/genai-rag/prepress-review-agents/<image>:<short-sha>`.
 - `deploy` connects with an SSH key that the VM restricts to running `/opt/prepress/deploy.sh`, so the key cannot open a shell. The compose file is sent on stdin and the image tag must be a git SHA.
 - `deploy.sh` keeps the previous release and rolls back automatically if the API's `/healthz` and the web app do not both respond within 60 seconds.
 - No ports are published on the VM. Public traffic reaches it only through Cloudflare Tunnel.

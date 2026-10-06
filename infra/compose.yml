@@ -29,7 +29,7 @@ services:
 
   api:
     <<: *hardening
-    image: registry.gitlab.com/genai-rag/prepress-review-agents/api:${IMAGE_TAG:?IMAGE_TAG is required}
+    image: registry.gitlab.com/mak-projects/genai-rag/prepress-review-agents/api:${IMAGE_TAG:?IMAGE_TAG is required}
     read_only: true
     tmpfs:
       - /tmp
@@ -68,7 +68,7 @@ services:
   # folder, mounted read-only. The api only ever calls read_media_file here.
   mcp-artwork:
     <<: *hardening
-    image: registry.gitlab.com/genai-rag/prepress-review-agents/mcp-filesystem:${IMAGE_TAG:?IMAGE_TAG is required}
+    image: registry.gitlab.com/mak-projects/genai-rag/prepress-review-agents/mcp-filesystem:${IMAGE_TAG:?IMAGE_TAG is required}
     command: ["mcp-server-filesystem /data/artwork"]
     read_only: true
     tmpfs: [/tmp]
@@ -85,7 +85,7 @@ services:
   # write_file here.
   mcp-reports:
     <<: *hardening
-    image: registry.gitlab.com/genai-rag/prepress-review-agents/mcp-filesystem:${IMAGE_TAG:?IMAGE_TAG is required}
+    image: registry.gitlab.com/mak-projects/genai-rag/prepress-review-agents/mcp-filesystem:${IMAGE_TAG:?IMAGE_TAG is required}
     command: ["mcp-server-filesystem /data/reports"]
     read_only: true
     tmpfs: [/tmp]
@@ -97,7 +97,7 @@ services:
   # The web app: static files served by nginx.
   web:
     <<: *hardening
-    image: registry.gitlab.com/genai-rag/prepress-review-agents/web:${IMAGE_TAG:?IMAGE_TAG is required}
+    image: registry.gitlab.com/mak-projects/genai-rag/prepress-review-agents/web:${IMAGE_TAG:?IMAGE_TAG is required}
     read_only: true
     tmpfs: [/var/cache/nginx, /var/run, /tmp]
     networks: [edge]
