@@ -9,7 +9,7 @@
 stages: [check, build, deploy, eval]
 
 default:
-  tags: [proxmox-ci-runner]
+  tags: [homelab]
   interruptible: true
 
 variables:
